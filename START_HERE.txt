@@ -1,0 +1,116 @@
+================================================================================
+iMac Health Monitoring System - GitHub Edition
+================================================================================
+
+WHAT YOU HAVE:
+A complete monitoring system that runs on your Mac and tracks health metrics
+to Airtable, with all code stored safely on GitHub.
+
+YOUR WORKFLOW:
+1. Code lives on GitHub (public or private repo)
+2. You clone it to your Mac
+3. Local .env file stores your Airtable API credentials (gitignored)
+4. Scripts run automatically on your Mac
+5. Update with "git pull" - credentials stay safe!
+
+================================================================================
+QUICK START (15 minutes total)
+================================================================================
+
+STEP 1: Read the Getting Started Guide
+📄 Open: GETTING_STARTED.md
+This gives you the complete 3-step workflow
+
+STEP 2: Set Up Airtable (if you haven't already)
+- Go to airtable.com and create free account
+- Create a base called "iMac System Health"
+- Get your API key and Base ID
+
+STEP 3: Follow GITHUB_SETUP.md
+📄 Open: GITHUB_SETUP.md
+This walks you through:
+- Creating your GitHub repository
+- Pushing these files to GitHub
+- Cloning to your Mac
+- Running setup.sh to configure
+
+================================================================================
+FILES IN THIS PACKAGE
+================================================================================
+
+START HERE:
+├── GETTING_STARTED.md          ⭐ Read this first!
+└── GITHUB_SETUP.md              Complete GitHub setup guide
+
+CORE FILES (will go to GitHub):
+├── imac_health_monitor.sh       Main monitoring script
+├── setup.sh                     Interactive setup wizard
+├── .env.example                 Template for credentials
+├── .gitignore                   Protects your credentials
+└── test_airtable_connection.sh  Test your setup
+
+DOCUMENTATION:
+├── README.md                    Full system documentation
+├── SETUP_GUIDE.md               Detailed setup guide
+└── QUICK_REFERENCE.md           Daily commands & troubleshooting
+
+YOU WILL CREATE (locally, gitignored):
+└── .env                         Your Airtable credentials (created by setup.sh)
+
+================================================================================
+SECURITY MODEL
+================================================================================
+
+✅ GOES TO GITHUB (safe to share):
+- All scripts (.sh files)
+- All documentation (.md files)  
+- .gitignore (protection list)
+- .env.example (template only)
+
+❌ STAYS LOCAL (gitignored):
+- .env (YOUR actual API credentials)
+- *.log (log files)
+- .DS_Store (macOS files)
+
+Your Airtable API key NEVER goes to GitHub!
+
+================================================================================
+WHAT IT MONITORS
+================================================================================
+
+✓ SMART status of your external Thunderbolt SSD
+✓ Kernel panics (last 7 days)
+✓ System errors from logs (last 24 hours)
+✓ Drive space usage
+✓ Memory pressure
+✓ System uptime
+✓ Time Machine backup status
+✓ Overall health score
+
+All data timestamped and sent to Airtable for historical tracking.
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+1. 📖 Open GETTING_STARTED.md
+2. 🔧 Follow the 3-step setup
+3. ✅ Verify first health check in Airtable
+4. 📚 Bookmark QUICK_REFERENCE.md for daily use
+
+Questions? Everything is documented in the .md files!
+
+================================================================================
+NEED HELP?
+================================================================================
+
+For GitHub setup → GITHUB_SETUP.md
+For system setup → GETTING_STARTED.md or SETUP_GUIDE.md
+For daily usage → QUICK_REFERENCE.md
+To test Airtable → Run test_airtable_connection.sh
+
+================================================================================
+
+Ready? Open GETTING_STARTED.md and let's go! 🚀
+
+================================================================================

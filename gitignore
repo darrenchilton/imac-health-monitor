@@ -1,0 +1,24 @@
+# Credentials - NEVER commit these!
+.env
+config.local.sh
+*.key
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+._*
+
+# Testing and temp files
+test_*.txt
+*.tmp
+*.bak
+
+# User-specific launch agents (will be generated)
+*.plist.configured
