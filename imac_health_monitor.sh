@@ -49,7 +49,7 @@ get_smart_status() {
     # Get disk identifier without partition (e.g., disk2s1 -> disk2)
     DISK_ID=$(echo "$BOOT_DRIVE" | sed 's/s[0-9]*$//')
     
-    log_message "Checking SMART status for boot drive: $DISK_ID"
+    log_message "Checking SMART status for boot drive: $DISK_ID" >&2
     
     # Get SMART status
     SMART_OUTPUT=$(diskutil info "$DISK_ID" 2>&1)
@@ -64,7 +64,7 @@ get_smart_status() {
 
 # Function to check for recent kernel panics
 check_kernel_panics() {
-    log_message "Checking for kernel panics..."
+    log_message "Checking for kernel panics..." >&2
     
     # Check for panic logs in the last 7 days
     PANIC_COUNT=$(find /Library/Logs/DiagnosticReports -name "Kernel_*.panic" -mtime -7 2>/dev/null | wc -l | xargs)
@@ -81,20 +81,23 @@ check_kernel_panics() {
 
 # Function to check system log for errors
 check_system_errors() {
-    log_message "Checking system logs for errors..."
+    log_message "Checking system logs for errors..." >&2
     
-    # Get error count from last 24 hours
-    ERROR_COUNT=$(log show --predicate 'messageType == error' --last 24h 2>/dev/null | grep -c "^[0-9]" || echo "0")
+    # Use faster method - check last 1 hour instead of 24h, with timeout
+    ERROR_COUNT=$(timeout 10 log show --predicate 'messageType == error' --last 1h 2>/dev/null | wc -l || echo "0")
+    CRITICAL_COUNT=$(timeout 10 log show --predicate 'messageType == fault' --last 1h 2>/dev/null | wc -l || echo "0")
     
-    # Get critical error count
-    CRITICAL_COUNT=$(log show --predicate 'messageType == fault' --last 24h 2>/dev/null | grep -c "^[0-9]" || echo "0")
-    
-    echo "Errors: $ERROR_COUNT, Critical: $CRITICAL_COUNT (last 24h)"
+    # If timeout occurred, use placeholder
+    if [ "$ERROR_COUNT" = "0" ] && [ "$CRITICAL_COUNT" = "0" ]; then
+        echo "Log check skipped (too slow)"
+    else
+        echo "Errors: $ERROR_COUNT, Critical: $CRITICAL_COUNT (last 1h)"
+    fi
 }
 
 # Function to get drive space info
 get_drive_space() {
-    log_message "Checking drive space..."
+    log_message "Checking drive space..." >&2
     
     BOOT_INFO=$(df -h / | tail -1)
     TOTAL=$(echo "$BOOT_INFO" | awk '{print $2}')
@@ -137,7 +140,7 @@ get_cpu_temp() {
 
 # Function to check Time Machine backup status
 check_time_machine() {
-    log_message "Checking Time Machine status..."
+    log_message "Checking Time Machine status..." >&2
     
     TM_STATUS=$(tmutil latestbackup 2>/dev/null)
     if [ -n "$TM_STATUS" ]; then
@@ -184,10 +187,15 @@ JSON_PAYLOAD=$(cat <<EOF
 EOF
 )
 
+# Debug: Log the JSON payload
+echo "DEBUG: JSON Payload:" >> "$LOG_FILE"
+echo "$JSON_PAYLOAD" >> "$LOG_FILE"
+
 log_message "Sending data to Airtable..."
 
 # Send to Airtable
-RESPONSE=$(curl -s -X POST "https://api.airtable.com/v0/$AIRTABLE_BASE_ID/$AIRTABLE_TABLE_NAME" \
+TABLE_ENCODED=$(echo "$AIRTABLE_TABLE_NAME" | sed 's/ /%20/g')
+RESPONSE=$(curl -s -X POST "https://api.airtable.com/v0/$AIRTABLE_BASE_ID/$TABLE_ENCODED" \
   -H "Authorization: Bearer $AIRTABLE_API_KEY" \
   -H "Content-Type: application/json" \
   -d "$JSON_PAYLOAD")
