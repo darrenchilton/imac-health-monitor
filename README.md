@@ -231,9 +231,6 @@ Check logs:
 * Add optional Slack or email alerts
 * Add a simple local dashboard (HTML/MiniUI)
 * Add deeper hardware-level checks (fans, voltages, etc.)
-
-* Darren checking auto update : 16:04
-
 ---
 
 # **📄 License**
