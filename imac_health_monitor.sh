@@ -294,12 +294,83 @@ MACOS_VERSION=$(sw_vers -productVersion)
 
 log_message "Metrics collected successfully"
 
-# Compute Health Score more robustly (no string matching on Kernel Panics text)
-if [ "$SMART_STATUS" = "Verified" ] && [ "$KERNEL_PANIC_COUNT" -eq 0 ]; then
-    HEALTH_SCORE="Healthy"
-else
+###############################################################################
+# Derive numeric values for Health Score evaluation
+###############################################################################
+
+# Disk usage: extract percentage from "Total: X, Used: Y (Z%), Available: A"
+PERCENT_USED_NUM=$(echo "$DRIVE_SPACE" | sed -n 's/.*(\([0-9]\+\)%).*/\1/p')
+[ -z "$PERCENT_USED_NUM" ] && PERCENT_USED_NUM=0
+
+# CPU temp: extract numeric part from e.g. "56.8°C"
+CPU_TEMP_NUM=$(echo "$CPU_TEMP" | sed 's/[^0-9.]//g')
+CPU_TEMP_INT=0
+if [ -n "$CPU_TEMP_NUM" ]; then
+    CPU_TEMP_INT=${CPU_TEMP_NUM%.*}
+fi
+
+# System errors: extract "Errors: N, Critical: M (last 1h)"
+ERROR_COUNT_NUM=$(echo "$SYSTEM_ERRORS" | sed -n 's/Errors: \([0-9]\+\).*/\1/p')
+[ -z "$ERROR_COUNT_NUM" ] && ERROR_COUNT_NUM=0
+
+CRITICAL_COUNT_NUM=$(echo "$SYSTEM_ERRORS" | sed -n 's/.*Critical: \([0-9]\+\).*/\1/p')
+[ -z "$CRITICAL_COUNT_NUM" ] && CRITICAL_COUNT_NUM=0
+
+# Time Machine: basic sanity checks
+TM_NEEDS_ATTENTION=false
+if echo "$TM_STATUS" | grep -qi "Not configured"; then
+    TM_NEEDS_ATTENTION=true
+fi
+if echo "$TM_STATUS" | grep -qi "No destination configured"; then
+    TM_NEEDS_ATTENTION=true
+fi
+if echo "$TM_STATUS" | grep -qi "Destination not mounted"; then
+    TM_NEEDS_ATTENTION=true
+fi
+# If we never see a "Latest:" marker, assume it's not backing up properly
+if ! echo "$TM_STATUS" | grep -qi "Latest:"; then
+    TM_NEEDS_ATTENTION=true
+fi
+
+###############################################################################
+# Health Score rules
+#
+# Healthy if ALL of these are true:
+#   - SMART is Verified or Not Available (external/USB cases)
+#   - No kernel panics in last 24h
+#   - Disk usage < 90%
+#   - CPU temp < 85°C (if available)
+#   - No critical log entries and not an excessive number of errors
+#   - Time Machine appears configured & working
+###############################################################################
+
+HEALTH_SCORE="Healthy"
+
+# 1) SMART disk status (treat "Not Available" as neutral)
+if [ "$SMART_STATUS" != "Verified" ] && [ "$SMART_STATUS" != "Not Available" ]; then
+    HEALTH_SCORE="Attention Needed"
+
+# 2) Kernel panics in last 24h
+elif [ "$KERNEL_PANIC_COUNT" -gt 0 ]; then
+    HEALTH_SCORE="Attention Needed"
+
+# 3) Disk too full
+elif [ "$PERCENT_USED_NUM" -ge 90 ] 2>/dev/null; then
+    HEALTH_SCORE="Attention Needed"
+
+# 4) CPU running too hot (basic threshold)
+elif [ "$CPU_TEMP_INT" -ge 85 ] && [ "$CPU_TEMP_INT" -le 120 ]; then
+    HEALTH_SCORE="Attention Needed"
+
+# 5) Too many errors / any critical faults in last hour
+elif [ "$CRITICAL_COUNT_NUM" -gt 0 ] || [ "$ERROR_COUNT_NUM" -gt 100 ]; then
+    HEALTH_SCORE="Attention Needed"
+
+# 6) Time Machine not configured or clearly unhappy
+elif [ "$TM_NEEDS_ATTENTION" = true ]; then
     HEALTH_SCORE="Attention Needed"
 fi
+
 
 # Prepare JSON payload for Airtable
 JSON_PAYLOAD=$(cat <<EOF
