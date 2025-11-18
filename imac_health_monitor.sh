@@ -143,15 +143,23 @@ get_memory_pressure() {
 
 # Function to get CPU temperature (if available)
 get_cpu_temp() {
-    # Prefer osx-cpu-temp if available (no sudo required)
-    if command -v osx-cpu-temp >/dev/null 2>&1; then
-        # Example output: "56.8°C"
-        TEMP=$(osx-cpu-temp)
-        echo "$TEMP"
+    # Try common Homebrew locations first
+    if [ -x "/opt/homebrew/bin/osx-cpu-temp" ]; then
+        /opt/homebrew/bin/osx-cpu-temp
         return
     fi
 
-    # Fallback: nothing available
+    if [ -x "/usr/local/bin/osx-cpu-temp" ]; then
+        /usr/local/bin/osx-cpu-temp
+        return
+    fi
+
+    # Fallback: rely on PATH (interactive shells)
+    if command -v osx-cpu-temp >/dev/null 2>&1; then
+        osx-cpu-temp
+        return
+    fi
+
     echo "Unavailable"
 }
 
