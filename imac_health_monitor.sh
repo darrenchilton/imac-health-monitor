@@ -4,6 +4,7 @@
 # iMac Health Monitor
 # Collects system health metrics and sends to Airtable
 # Created: November 17, 2025
+# Updated: Kernel panic window = last 24 hours, improved Health Score logic
 ################################################################################
 
 # Determine script location
@@ -62,21 +63,28 @@ get_smart_status() {
     echo "$SMART_STATUS"
 }
 
-# Function to check for recent kernel panics
+# Function to check for recent kernel panics (last 24 hours)
+# Returns: "<COUNT>|<HUMAN_READABLE_MESSAGE>"
 check_kernel_panics() {
     log_message "Checking for kernel panics..." >&2
     
-    # Check for panic logs in the last 7 days
-    PANIC_COUNT=$(find /Library/Logs/DiagnosticReports -name "Kernel_*.panic" -mtime -7 2>/dev/null | wc -l | xargs)
+    # Check for panic logs in the last 24 hours (1440 minutes)
+    local COUNT
+    COUNT=$(find /Library/Logs/DiagnosticReports -name "Kernel_*.panic" -mmin -1440 2>/dev/null | wc -l | xargs)
     
-    if [ "$PANIC_COUNT" -gt 0 ]; then
-        LATEST_PANIC=$(find /Library/Logs/DiagnosticReports -name "Kernel_*.panic" -mtime -7 2>/dev/null | head -1)
-        PANIC_INFO="Found $PANIC_COUNT panic(s) in last 7 days. Latest: $(basename "$LATEST_PANIC" 2>/dev/null)"
-    else
-        PANIC_INFO="No kernel panics in last 7 days"
+    # Ensure COUNT is numeric
+    if ! [[ "$COUNT" =~ ^[0-9]+$ ]]; then
+        COUNT=0
     fi
     
-    echo "$PANIC_INFO"
+    if [ "$COUNT" -gt 0 ]; then
+        local LATEST_PANIC
+        LATEST_PANIC=$(find /Library/Logs/DiagnosticReports -name "Kernel_*.panic" -mmin -1440 2>/dev/null | head -1)
+        local MSG="Found $COUNT panic(s) in last 24 hours. Latest: $(basename "$LATEST_PANIC" 2>/dev/null)"
+        echo "${COUNT}|${MSG}"
+    else
+        echo "0|No kernel panics in last 24 hours"
+    fi
 }
 
 # Function to check system log for errors
@@ -144,7 +152,6 @@ get_cpu_temp() {
     echo "Unavailable"
 }
 
-
 # Function to check Time Machine backup status
 # This version works WITHOUT Full Disk Access by using filesystem access
 check_time_machine() {
@@ -186,7 +193,8 @@ check_time_machine() {
             local TIME_PART="${TIMESTAMP:11:2}:${TIMESTAMP:13:2}:${TIMESTAMP:15:2}"
             echo "$STATUS; Latest: $DATE_PART $TIME_PART"
         else
-            local BACKUP_NAME=$(basename "$TM_LATEST")
+            local BACKUP_NAME
+            BACKUP_NAME=$(basename "$TM_LATEST")
             echo "$STATUS; Latest: $BACKUP_NAME"
         fi
         return
@@ -211,13 +219,15 @@ check_time_machine() {
     fi
 
     # Get machine name
-    local MACHINE_NAME=$(hostname -s)
+    local MACHINE_NAME
+    MACHINE_NAME=$(hostname -s)
 
     # Check standard Time Machine structure
     local BACKUP_DIR="$MOUNT_POINT/Backups.backupdb/$MACHINE_NAME"
 
     if [ -d "$BACKUP_DIR" ]; then
-        local LATEST_BACKUP=$(ls -1 "$BACKUP_DIR" 2>/dev/null | grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$" | tail -1)
+        local LATEST_BACKUP
+        LATEST_BACKUP=$(ls -1 "$BACKUP_DIR" 2>/dev/null | grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$" | tail -1)
         
         if [ -n "$LATEST_BACKUP" ]; then
             local DATE_PART="${LATEST_BACKUP:0:10}"
@@ -231,10 +241,12 @@ check_time_machine() {
     local ALT_BACKUP_DIR="$MOUNT_POINT/.timemachine"
     
     if [ -d "$ALT_BACKUP_DIR" ]; then
-        local LATEST_BACKUP=$(find "$ALT_BACKUP_DIR" -maxdepth 2 -name "*.backup" -type d 2>/dev/null | sort | tail -1)
+        local LATEST_BACKUP
+        LATEST_BACKUP=$(find "$ALT_BACKUP_DIR" -maxdepth 2 -name "*.backup" -type d 2>/dev/null | sort | tail -1)
         
         if [ -n "$LATEST_BACKUP" ]; then
-            local BACKUP_NAME=$(basename "$LATEST_BACKUP" .backup)
+            local BACKUP_NAME
+            BACKUP_NAME=$(basename "$LATEST_BACKUP" .backup)
             if [[ "$BACKUP_NAME" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}) ]]; then
                 local TIMESTAMP="${BASH_REMATCH[1]}"
                 local DATE_PART="${TIMESTAMP:0:10}"
@@ -251,13 +263,16 @@ check_time_machine() {
     echo "$STATUS; Drive mounted, checking filesystem access..."
 }
 
-
-
 # Collect all metrics
 TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
 HOSTNAME=$(hostname)
 SMART_STATUS=$(get_smart_status)
-KERNEL_PANICS=$(check_kernel_panics)
+
+# Kernel panics: get count + human-readable message
+KERNEL_PANIC_RAW=$(check_kernel_panics)
+KERNEL_PANIC_COUNT=${KERNEL_PANIC_RAW%%|*}
+KERNEL_PANICS=${KERNEL_PANIC_RAW#*|}
+
 SYSTEM_ERRORS=$(check_system_errors)
 DRIVE_SPACE=$(get_drive_space)
 UPTIME=$(get_uptime)
@@ -267,6 +282,13 @@ TM_STATUS=$(check_time_machine)
 MACOS_VERSION=$(sw_vers -productVersion)
 
 log_message "Metrics collected successfully"
+
+# Compute Health Score more robustly (no string matching on Kernel Panics text)
+if [ "$SMART_STATUS" = "Verified" ] && [ "$KERNEL_PANIC_COUNT" -eq 0 ]; then
+    HEALTH_SCORE="Healthy"
+else
+    HEALTH_SCORE="Attention Needed"
+fi
 
 # Prepare JSON payload for Airtable
 JSON_PAYLOAD=$(cat <<EOF
@@ -283,7 +305,7 @@ JSON_PAYLOAD=$(cat <<EOF
     "Memory Pressure": "$MEMORY",
     "CPU Temperature": "$CPU_TEMP",
     "Time Machine": "$TM_STATUS",
-    "Health Score": "$([ "$SMART_STATUS" = "Verified" ] && [ "$KERNEL_PANICS" = "No kernel panics in last 7 days" ] && echo "Healthy" || echo "Attention Needed")"
+    "Health Score": "$HEALTH_SCORE"
   }
 }
 EOF
