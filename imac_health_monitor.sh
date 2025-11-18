@@ -107,7 +107,9 @@ check_system_errors() {
 get_drive_space() {
     log_message "Checking drive space..." >&2
     
-    BOOT_INFO=$(df -h / | tail -1)
+    # Use the filesystem that contains the home directory (usually the data volume)
+    BOOT_INFO=$(df -h "$HOME" | tail -1)
+
     TOTAL=$(echo "$BOOT_INFO" | awk '{print $2}')
     USED=$(echo "$BOOT_INFO" | awk '{print $3}')
     AVAILABLE=$(echo "$BOOT_INFO" | awk '{print $4}')
@@ -115,6 +117,7 @@ get_drive_space() {
     
     echo "Total: $TOTAL, Used: $USED ($PERCENT_USED), Available: $AVAILABLE"
 }
+
 
 # Function to get system uptime
 get_uptime() {
