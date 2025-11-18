@@ -298,92 +298,130 @@ log_message "Metrics collected successfully"
 # Derive numeric values for Health Score evaluation
 ###############################################################################
 
-# Disk usage: extract percentage from "Total: X, Used: Y (Z%), Available: A"
+# Disk usage: extract percentage from "Used (Z%)"
 PERCENT_USED_NUM=$(echo "$DRIVE_SPACE" | sed -n 's/.*(\([0-9]\+\)%).*/\1/p')
 [ -z "$PERCENT_USED_NUM" ] && PERCENT_USED_NUM=0
 
-# CPU temp: extract numeric part from e.g. "56.8°C"
+# CPU temperature: extract numeric part from "56.8°C"
 CPU_TEMP_NUM=$(echo "$CPU_TEMP" | sed 's/[^0-9.]//g')
 CPU_TEMP_INT=0
 if [ -n "$CPU_TEMP_NUM" ]; then
     CPU_TEMP_INT=${CPU_TEMP_NUM%.*}
 fi
 
-# System errors: extract "Errors: N, Critical: M (last 1h)"
+# System errors
 ERROR_COUNT_NUM=$(echo "$SYSTEM_ERRORS" | sed -n 's/Errors: \([0-9]\+\).*/\1/p')
 [ -z "$ERROR_COUNT_NUM" ] && ERROR_COUNT_NUM=0
 
 CRITICAL_COUNT_NUM=$(echo "$SYSTEM_ERRORS" | sed -n 's/.*Critical: \([0-9]\+\).*/\1/p')
 [ -z "$CRITICAL_COUNT_NUM" ] && CRITICAL_COUNT_NUM=0
 
-# Time Machine: basic sanity checks
+###############################################################################
+# Time Machine - compute days since last backup (if present)
+###############################################################################
 TM_NEEDS_ATTENTION=false
-if echo "$TM_STATUS" | grep -qi "Not configured"; then
-    TM_NEEDS_ATTENTION=true
-fi
-if echo "$TM_STATUS" | grep -qi "No destination configured"; then
-    TM_NEEDS_ATTENTION=true
-fi
-if echo "$TM_STATUS" | grep -qi "Destination not mounted"; then
-    TM_NEEDS_ATTENTION=true
-fi
-# If we never see a "Latest:" marker, assume it's not backing up properly
-if ! echo "$TM_STATUS" | grep -qi "Latest:"; then
+TM_LAST_BACKUP_DAYS=0
+
+# Extract date like: "Latest: 2025-11-18 05:42:36"
+LATEST_DATE=$(echo "$TM_STATUS" | grep -Eo "[0-9]{4}-[0-9]{2}-[0-9]{2}")
+LATEST_TIME=$(echo "$TM_STATUS" | grep -Eo "[0-9]{2}:[0-9]{2}:[0-9]{2}")
+
+if [ -n "$LATEST_DATE" ] && [ -n "$LATEST_TIME" ]; then
+    LAST_BACKUP_TS=$(date -j -f "%Y-%m-%d %H:%M:%S" "$LATEST_DATE $LATEST_TIME" +%s 2>/dev/null)
+    NOW_TS=$(date +%s)
+    if [ -n "$LAST_BACKUP_TS" ]; then
+        TM_LAST_BACKUP_DAYS=$(( (NOW_TS - LAST_BACKUP_TS) / 86400 ))
+    fi
+else
     TM_NEEDS_ATTENTION=true
 fi
 
 ###############################################################################
-# Health Score rules + Reasons
+# Severity + Reasons + Health Score
 ###############################################################################
 
-HEALTH_SCORE="Healthy"
+SEVERITY="Info"
 REASONS=""
 
-# 1) SMART disk status (treat "Not Available" as neutral)
+# Helper: escalate severity (never downgrade)
+bump_to_warning() {
+    if [ "$SEVERITY" = "Info" ]; then
+        SEVERITY="Warning"
+    fi
+}
+bump_to_critical() {
+    SEVERITY="Critical"
+}
+
+### SMART status
 if [ "$SMART_STATUS" != "Verified" ] && [ "$SMART_STATUS" != "Not Available" ]; then
-    HEALTH_SCORE="Attention Needed"
+    bump_to_critical
     REASONS+="SMART status is '$SMART_STATUS'. "
 fi
 
-# 2) Kernel panics in last 24h
+### Kernel panics (24h)
 if [ "$KERNEL_PANIC_COUNT" -gt 0 ]; then
-    HEALTH_SCORE="Attention Needed"
+    bump_to_critical
     REASONS+="Kernel panics in last 24 hours: $KERNEL_PANIC_COUNT. "
 fi
 
-# 3) Disk too full
-if [ "$PERCENT_USED_NUM" -ge 90 ] 2>/dev/null; then
-    HEALTH_SCORE="Attention Needed"
-    REASONS+="Disk usage is ${PERCENT_USED_NUM}% (>= 90%). "
+### Disk usage thresholds
+if [ "$PERCENT_USED_NUM" -ge 90 ]; then
+    bump_to_critical
+    REASONS+="Disk usage ${PERCENT_USED_NUM}% (>= 90%). "
+elif [ "$PERCENT_USED_NUM" -ge 80 ]; then
+    bump_to_warning
+    REASONS+="Disk usage ${PERCENT_USED_NUM}% (>= 80%). "
 fi
 
-# 4) CPU running too hot (basic threshold)
-if [ "$CPU_TEMP_INT" -ge 85 ] && [ "$CPU_TEMP_INT" -le 120 ]; then
-    HEALTH_SCORE="Attention Needed"
-    REASONS+="CPU temperature is ${CPU_TEMP_INT}°C (>= 85°C). "
+### CPU temp thresholds
+if [ "$CPU_TEMP_INT" -ge 85 ] && [ "$CPU_TEMP_INT" -lt 120 ]; then
+    bump_to_critical
+    REASONS+="CPU temp ${CPU_TEMP_INT}°C (>= 85°C). "
+elif [ "$CPU_TEMP_INT" -ge 80 ] && [ "$CPU_TEMP_INT" -lt 85 ]; then
+    bump_to_warning
+    REASONS+="CPU temp ${CPU_TEMP_INT}°C (>= 80°C). "
 fi
 
-# 5) Too many errors / any critical faults in last hour
+### System logs
 if [ "$CRITICAL_COUNT_NUM" -gt 0 ]; then
-    HEALTH_SCORE="Attention Needed"
-    REASONS+="System log shows ${CRITICAL_COUNT_NUM} critical message(s) in last hour. "
+    bump_to_critical
+    REASONS+="Critical log messages: ${CRITICAL_COUNT_NUM}. "
 fi
 
-if [ "$ERROR_COUNT_NUM" -gt 100 ]; then
-    HEALTH_SCORE="Attention Needed"
-    REASONS+="System log shows ${ERROR_COUNT_NUM} error message(s) in last hour (> 100). "
+if [ "$ERROR_COUNT_NUM" -gt 2000 ]; then
+    bump_to_critical
+    REASONS+="Error count very high (${ERROR_COUNT_NUM}). "
+elif [ "$ERROR_COUNT_NUM" -gt 500 ]; then
+    bump_to_warning
+    REASONS+="Error count elevated (${ERROR_COUNT_NUM}). "
 fi
 
-# 6) Time Machine not configured or clearly unhappy
+### Time Machine thresholds
 if [ "$TM_NEEDS_ATTENTION" = true ]; then
-    HEALTH_SCORE="Attention Needed"
-    REASONS+="Time Machine not configured or latest backup not detected. "
+    bump_to_critical
+    REASONS+="Time Machine not configured or destination missing. "
+elif [ "$TM_LAST_BACKUP_DAYS" -ge 7 ]; then
+    bump_to_critical
+    REASONS+="Last Time Machine backup ${TM_LAST_BACKUP_DAYS} days ago (>= 7 days). "
+elif [ "$TM_LAST_BACKUP_DAYS" -ge 3 ]; then
+    bump_to_warning
+    REASONS+="Last Time Machine backup ${TM_LAST_BACKUP_DAYS} days ago (>= 3 days). "
 fi
 
-# If still healthy and no specific reasons, set a friendly default
-if [ "$HEALTH_SCORE" = "Healthy" ] && [ -z "$REASONS" ]; then
+### Final Health Score from Severity
+if [ "$SEVERITY" = "Info" ]; then
+    HEALTH_SCORE="Healthy"
+else
+    HEALTH_SCORE="Attention Needed"
+fi
+
+### Default reason for healthy systems
+if [ -z "$REASONS" ]; then
     REASONS="All checks passed within defined thresholds."
 fi
+
+
 
 
 
@@ -403,11 +441,14 @@ JSON_PAYLOAD=$(cat <<EOF
     "CPU Temperature": "$CPU_TEMP",
     "Time Machine": "$TM_STATUS",
     "Health Score": "$HEALTH_SCORE",
+    "Severity": "$SEVERITY",
     "Reasons": "$REASONS"
   }
 }
 EOF
 )
+
+
 
 
 # Debug: Log the JSON payload
