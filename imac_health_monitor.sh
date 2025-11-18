@@ -132,24 +132,126 @@ get_memory_pressure() {
 
 # Function to get CPU temperature (if available)
 get_cpu_temp() {
-    # Try to get temperature using powermetrics (requires sudo)
-    # This is a placeholder - may need adjustment based on available tools
-    TEMP="Not available without sudo"
-    echo "$TEMP"
+    # Prefer osx-cpu-temp if available (no sudo required)
+    if command -v osx-cpu-temp >/dev/null 2>&1; then
+        # Example output: "56.8°C"
+        TEMP=$(osx-cpu-temp)
+        echo "$TEMP"
+        return
+    fi
+
+    # Fallback: nothing available
+    echo "Unavailable"
 }
 
+
 # Function to check Time Machine backup status
+# This version works WITHOUT Full Disk Access by using filesystem access
 check_time_machine() {
     log_message "Checking Time Machine status..." >&2
-    
-    TM_STATUS=$(tmutil latestbackup 2>/dev/null)
-    if [ -n "$TM_STATUS" ]; then
-        LATEST_BACKUP=$(basename "$TM_STATUS")
-        echo "Latest backup: $LATEST_BACKUP"
+
+    local STATUS="Not configured"
+
+    # Check if Time Machine is running
+    local TM_RAW_STATUS
+    TM_RAW_STATUS=$(tmutil status 2>/dev/null || true)
+
+    if [ -n "$TM_RAW_STATUS" ]; then
+        if echo "$TM_RAW_STATUS" | grep -q "Running = 1"; then
+            local PHASE
+            PHASE=$(echo "$TM_RAW_STATUS" \
+                | awk -F'= ' '/BackupPhase/ {gsub(/[;"]/, "", $2); gsub(/^ *| *$/, "", $2); print $2; exit}')
+            if [ -n "$PHASE" ]; then
+                STATUS="Backup in progress ($PHASE)"
+            else
+                STATUS="Backup in progress"
+            fi
+        else
+            STATUS="Configured"
+        fi
     else
-        echo "No Time Machine backup found"
+        echo "Not configured"
+        return
     fi
+
+    # Try tmutil commands first (require Full Disk Access)
+    local TM_LATEST
+    TM_LATEST=$(tmutil latestbackup 2>/dev/null || true)
+    
+    if [ -n "$TM_LATEST" ] && ! echo "$TM_LATEST" | grep -q "requires Full Disk Access"; then
+        # Success with tmutil latestbackup
+        if [[ "$TM_LATEST" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}) ]]; then
+            local TIMESTAMP="${BASH_REMATCH[1]}"
+            local DATE_PART="${TIMESTAMP:0:10}"
+            local TIME_PART="${TIMESTAMP:11:2}:${TIMESTAMP:13:2}:${TIMESTAMP:15:2}"
+            echo "$STATUS; Latest: $DATE_PART $TIME_PART"
+        else
+            local BACKUP_NAME=$(basename "$TM_LATEST")
+            echo "$STATUS; Latest: $BACKUP_NAME"
+        fi
+        return
+    fi
+
+    # Fallback: Use filesystem access (works without Full Disk Access)
+    local DEST_INFO
+    DEST_INFO=$(tmutil destinationinfo 2>/dev/null || true)
+
+    if [ -z "$DEST_INFO" ]; then
+        echo "$STATUS; No destination configured"
+        return
+    fi
+
+    # Extract mount point
+    local MOUNT_POINT
+    MOUNT_POINT=$(echo "$DEST_INFO" | grep "Mount Point" | head -1 | awk -F': ' '{print $2}' | xargs)
+
+    if [ -z "$MOUNT_POINT" ]; then
+        echo "$STATUS; Destination not mounted"
+        return
+    fi
+
+    # Get machine name
+    local MACHINE_NAME=$(hostname -s)
+
+    # Check standard Time Machine structure
+    local BACKUP_DIR="$MOUNT_POINT/Backups.backupdb/$MACHINE_NAME"
+
+    if [ -d "$BACKUP_DIR" ]; then
+        local LATEST_BACKUP=$(ls -1 "$BACKUP_DIR" 2>/dev/null | grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$" | tail -1)
+        
+        if [ -n "$LATEST_BACKUP" ]; then
+            local DATE_PART="${LATEST_BACKUP:0:10}"
+            local TIME_PART="${LATEST_BACKUP:11:2}:${LATEST_BACKUP:13:2}:${LATEST_BACKUP:15:2}"
+            echo "$STATUS; Latest: $DATE_PART $TIME_PART"
+            return
+        fi
+    fi
+
+    # Check APFS snapshot-style backups
+    local ALT_BACKUP_DIR="$MOUNT_POINT/.timemachine"
+    
+    if [ -d "$ALT_BACKUP_DIR" ]; then
+        local LATEST_BACKUP=$(find "$ALT_BACKUP_DIR" -maxdepth 2 -name "*.backup" -type d 2>/dev/null | sort | tail -1)
+        
+        if [ -n "$LATEST_BACKUP" ]; then
+            local BACKUP_NAME=$(basename "$LATEST_BACKUP" .backup)
+            if [[ "$BACKUP_NAME" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}) ]]; then
+                local TIMESTAMP="${BASH_REMATCH[1]}"
+                local DATE_PART="${TIMESTAMP:0:10}"
+                local TIME_PART="${TIMESTAMP:11:2}:${TIMESTAMP:13:2}:${TIMESTAMP:15:2}"
+                echo "$STATUS; Latest: $DATE_PART $TIME_PART"
+                return
+            else
+                echo "$STATUS; Latest: $BACKUP_NAME"
+                return
+            fi
+        fi
+    fi
+
+    echo "$STATUS; Drive mounted, checking filesystem access..."
 }
+
+
 
 # Collect all metrics
 TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
