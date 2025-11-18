@@ -1,18 +1,18 @@
 #!/bin/bash
 
 ################################################################################
-# iMac Health Monitor - Burst-Aware Edition
+# iMac Health Monitor - Burst-Aware Edition with Software Updates
 # Collects system health metrics and sends to Airtable
 # Created: November 17, 2025
-# Updated: November 18, 2025 - Added burst detection and intelligent thresholds
-# Version: 2.0 - Burst-Aware
+# Updated: November 18, 2025 - Added software updates monitoring
+# Version: 2.1 - Software Updates Feature
 #
-# Changes from v1.0:
-# - Fixed log_message to not pollute function outputs
-# - Added check_error_burst() for recent vs. historical error detection
-# - Updated check_system_errors() to include burst metrics
-# - Raised error thresholds to realistic post-migration levels
-# - Added burst-aware logic to distinguish transient vs. sustained problems
+# Changes from v2.0:
+# - Added check_software_updates() function to monitor macOS updates
+# - Uses safe_timeout to prevent hanging on slow Apple server responses
+# - Parses update count and details (labels) from softwareupdate --list
+# - Added "Software Updates" field to Airtable payload
+# - Does NOT affect health score (informational only)
 ################################################################################
 
 # Determine script location
@@ -48,7 +48,7 @@ log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
-log_message "=== Starting iMac Health Check (Burst-Aware v2.0) ==="
+log_message "=== Starting iMac Health Check (v2.1 - Software Updates) ==="
 
 ###############################################################################
 # Helper utilities for robustness
@@ -414,6 +414,50 @@ check_time_machine() {
 }
 
 ###############################################################################
+# Software Updates Available
+###############################################################################
+# Returns: "Up to Date" or "N updates available: details"
+check_software_updates() {
+    log_message "Checking for software updates..."
+    
+    if ! have_cmd softwareupdate; then
+        echo "Update tool not available"
+        return 0
+    fi
+    
+    # Use timeout to prevent hanging (softwareupdate can be slow)
+    local UPDATE_CHECK
+    UPDATE_CHECK=$(safe_timeout 60 softwareupdate --list 2>&1)
+    
+    # Check if updates were found
+    if echo "$UPDATE_CHECK" | grep -q "Software Update found"; then
+        # Count updates (lines starting with *)
+        local UPDATE_COUNT
+        UPDATE_COUNT=$(echo "$UPDATE_CHECK" | grep -c "^\*")
+        
+        # Extract update details (label and title)
+        local UPDATE_DETAILS=""
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^\*[[:space:]]Label:[[:space:]](.+)$ ]]; then
+                local LABEL="${BASH_REMATCH[1]}"
+                UPDATE_DETAILS+="$LABEL, "
+            fi
+        done < <(echo "$UPDATE_CHECK")
+        
+        # Clean up trailing comma and space
+        UPDATE_DETAILS="${UPDATE_DETAILS%, }"
+        
+        if [ -n "$UPDATE_DETAILS" ]; then
+            echo "$UPDATE_COUNT updates available: $UPDATE_DETAILS"
+        else
+            echo "$UPDATE_COUNT updates available"
+        fi
+    else
+        echo "Up to Date"
+    fi
+}
+
+###############################################################################
 # Collect all metrics
 ###############################################################################
 TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
@@ -447,6 +491,7 @@ safe_get UPTIME         get_uptime
 safe_get MEMORY         get_memory_pressure
 safe_get CPU_TEMP       get_cpu_temp
 safe_get TM_STATUS      check_time_machine
+safe_get SOFTWARE_UPDATES check_software_updates
 MACOS_VERSION=$(sw_vers -productVersion 2>/dev/null || echo "Unknown")
 
 log_message "Metrics collected successfully"
@@ -608,6 +653,7 @@ if have_cmd jq; then
       --arg mem "$MEMORY" \
       --arg cpu "$CPU_TEMP" \
       --arg tm "$TM_STATUS" \
+      --arg sw_updates "$SOFTWARE_UPDATES" \
       --arg health "$HEALTH_SCORE" \
       --arg severity "$SEVERITY" \
       --arg reasons "$REASONS" \
@@ -623,6 +669,7 @@ if have_cmd jq; then
           "Memory Pressure": $mem,
           "CPU Temperature": $cpu,
           "Time Machine": $tm,
+          "Software Updates": $sw_updates,
           "Health Score": $health,
           "Severity": $severity,
           "Reasons": $reasons
@@ -643,6 +690,7 @@ else
     "Memory Pressure": "$MEMORY",
     "CPU Temperature": "$CPU_TEMP",
     "Time Machine": "$TM_STATUS",
+    "Software Updates": "$SOFTWARE_UPDATES",
     "Health Score": "$HEALTH_SCORE",
     "Severity": "$SEVERITY",
     "Reasons": "$REASONS"
@@ -681,5 +729,5 @@ else
     log_message "Response: $RESPONSE"
 fi
 
-log_message "=== Health check completed (Burst-Aware v2.0) ==="
+log_message "=== Health check completed (v2.1 - Software Updates) ==="
 echo ""
