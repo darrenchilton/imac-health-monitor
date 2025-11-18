@@ -1,120 +1,198 @@
 # iMac Health Monitoring System
 
-**Automated system health monitoring with Airtable tracking - Version controlled on GitHub, runs locally on your Mac**
+![Version](https://img.shields.io/badge/version-1.0.0-green)
+![macOS](https://img.shields.io/badge/macOS-Sonoma%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-[![macOS](https://img.shields.io/badge/macOS-Sonoma%2B-blue)]()
-[![License](https://img.shields.io/badge/license-MIT-green)]()
+---
+
+## 📚 Table of Contents
+- [Overview](#-overview)
+- [Airtable Field Reference](#-airtable-field-reference)
+- [Security Model](#-security-model)
+- [Quick Start](#-quick-start)
+- [What Gets Monitored](#-what-gets-monitored)
+- [Daily Usage](#-daily-usage)
+- [Updating from GitHub](#-updating-from-github)
+- [Repository Structure](#-repository-structure)
+- [Health Indicators](#-health-indicators)
+- [Configuration](#-configuration)
+- [Troubleshooting](#-troubleshooting)
+- [Additional Documentation](#-additional-documentation)
+- [Use Case (Real-World Example)](#-use-case-real-world-example)
+- [Advanced Features](#-advanced-features)
+- [Security Best Practices](#-security-best-practices)
+- [Roadmap](#-roadmap)
+- [Contributing](#-contributing)
+- [License](#-license)
+- [Acknowledgments](#-acknowledgments)
+- [Support](#-support)
+- [Getting Started](#-getting-started)
 
 ---
 
 ## 🎯 Overview
 
-Proactive health monitoring system for macOS that tracks your system's vital signs and sends daily reports to Airtable. Perfect for catching hardware issues before they become critical failures.
+Proactive health monitoring system for macOS that tracks system vitals and automatically sends daily reports to Airtable. Perfect for detecting early warning signs of hardware issues—before they become failures.
 
-**Born from necessity:** After experiencing a kernel panic and Fusion Drive failure, this system was created to provide early warning of potential problems.
+Created after experiencing kernel panics and a Fusion Drive failure, this tool serves as a real-world preventive monitoring solution.
 
-### Key Features
+---
 
-- ✅ **SMART status monitoring** - Track your external boot drive health
-- ✅ **Kernel panic detection** - Alert on system crashes (last 7 days)
-- ✅ **System error tracking** - Monitor log errors and critical events
-- ✅ **Drive space monitoring** - Prevent full disk issues
-- ✅ **Memory pressure tracking** - Performance indicators
-- ✅ **CPU temperature** - Real-time thermal monitoring with osx-cpu-temp
-- ✅ **Time Machine verification** - Intelligent backup status checks (works with or without Full Disk Access)
-- ✅ **Historical tracking** - All data stored in Airtable with timestamps
-- ✅ **Automated scheduling** - Daily/hourly checks via launchd
-- ✅ **Health scoring** - Quick status overview
+## 📊 Airtable Field Reference
+
+Below is a complete reference of the Airtable fields produced by the monitoring system.
+
+### Primary Fields (Script-Generated)
+
+| Field Name | Type | Description |
+|-----------|------|-------------|
+| Timestamp | Date/Time | When the script ran |
+| Hostname | Text | Mac reporting data |
+| macOS Version | Text | OS version |
+| SMART Status | Single select | Verified / Failed / Not Available |
+| Kernel Panics | Text | Summary of recent panics |
+| System Errors | Text | “Errors: #, Critical: # (last 1h)” |
+| Drive Space | Text | Full drive space metrics |
+| Uptime | Text | Time since last reboot |
+| Memory Pressure | Text | RAM % utilization |
+| CPU Temperature | Text | Example: `53.4°C` |
+| Time Machine | Text | Backup status summary |
+| Health Score | Single select | Healthy / Attention Needed |
+| Severity | Single select | Info / Warning / Critical |
+| Reasons | Long text | Explanation for state |
+
+### Derived Formula Fields
+
+**Disk Used %**
+```text
+IF(
+  {Drive Space},
+  VALUE(REGEX_EXTRACT({Drive Space}, "\(([0-9]+)%\)")),
+  BLANK()
+)
+```
+
+**CPU Temp (°C)**
+```text
+IF(
+  {CPU Temperature},
+  VALUE(REGEX_EXTRACT({CPU Temperature}, "([0-9]+\.?[0-9]*)")),
+  BLANK()
+)
+```
+
+**Error Count**
+```text
+IF(
+  {System Errors},
+  VALUE(REGEX_EXTRACT({System Errors}, "Errors:\s*([0-9]+)")),
+  0
+)
+```
+
+**Critical Count**
+```text
+IF(
+  {System Errors},
+  VALUE(REGEX_EXTRACT({System Errors}, "Critical:\s*([0-9]+)")),
+  0
+)
+```
+
+**TM Age (days)**
+```text
+IF(
+  REGEX_MATCH({Time Machine}, "Latest:"),
+  DATETIME_DIFF(
+    NOW(),
+    DATETIME_PARSE(
+      REGEX_EXTRACT({Time Machine}, "Latest:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})"),
+      "YYYY-MM-DD"
+    ),
+    'days'
+  ),
+  BLANK()
+)
+```
 
 ---
 
 ## 🔒 Security Model
 
-- **Scripts**: Version controlled on GitHub (no sensitive data)
-- **Credentials**: Stored locally in `.env` file (gitignored, never committed)
-- **Updates**: `git pull` to get script updates, credentials stay safe on your Mac
-- **Flexibility**: Each Mac can have its own `.env` with unique credentials
+The system is designed so that **no sensitive data is ever committed to GitHub** and all credentials stay local to your Mac.
+
+### Key Principles
+
+#### 1. Credentials Stay Local
+- Stored only in `.env` (gitignored)
+- Safe from being pushed to GitHub
+- Each Mac can use unique credentials
+
+#### 2. Only Safe Files Are Versioned
+Safe:
+- `.sh` scripts  
+- Markdown docs  
+- `.env.example`  
+- `.gitignore`
+
+Not stored:
+- `.env`  
+- Logs  
+- System files  
+- Any sensitive data
+
+#### 3. Runs Locally with Minimal Surface Area
+- Uses macOS built-in utilities (diskutil, log, tmutil)  
+- No external dependencies except Airtable  
+- No telemetry, background daemons, or remote code execution
+
+#### 4. Safe Updates
+`git pull` never touches `.env`.  
+If configuration changes, simply rerun:
+
+```bash
+./setup.sh
+```
 
 ---
 
 ## 🚀 Quick Start
 
-### Prerequisites
-
-- **macOS Sonoma or later** (should work on earlier versions)
-- **Airtable account** (free tier works great)
-- **Homebrew** - Required for CPU temperature monitoring
-- **Full Disk Access** (recommended) - For complete Time Machine backup detection
-
-### 1. Install Homebrew and Dependencies
-
-If you don't have Homebrew installed:
-
+### 1. Install Homebrew & Dependencies
 ```bash
-# Install Homebrew
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install osx-cpu-temp (required for CPU temperature monitoring)
 brew install osx-cpu-temp
 ```
 
 ### 2. Grant Full Disk Access (Recommended)
-
-For optimal Time Machine backup detection, grant Full Disk Access:
-
-1. Open **System Settings** → **Privacy & Security** → **Full Disk Access**
-2. Click the **+** button
-3. Add **Terminal** (`/Applications/Utilities/Terminal.app`)
-4. For automated monitoring, also add `/bin/bash`:
-   - Click **+**, press **Cmd+Shift+G**
-   - Type `/bin/bash` and click Go
-   - Add it to the list
-5. Toggle both **ON**
-
-**Note:** The script works without Full Disk Access using filesystem-based backup detection, but FDA provides more reliable results.
+System Settings → Privacy & Security → Full Disk Access  
+Add:
+- Terminal  
+- `/bin/bash`
 
 ### 3. Clone the Repository
-
 ```bash
-cd ~/Documents  # or wherever you want to keep it
+cd ~/Documents
 git clone https://github.com/YOUR_USERNAME/imac-health-monitor.git
 cd imac-health-monitor
 ```
 
-### 4. Set Up Airtable (5 minutes)
-
-1. Go to [airtable.com](https://airtable.com) and sign in (or create free account)
-2. Create a new base called **"iMac System Health"**
-3. Rename the default table to **"System Health"**
-4. Get your credentials:
-   - **API Token**: Go to https://airtable.com/create/tokens
-     - Create new token with scopes: `data.records:read`, `data.records:write`, `schema.bases:read`
-     - Add your "iMac System Health" base to the token's access list
-   - **Base ID**: Go to https://airtable.com/api, click your base, find the ID in the URL (starts with `app`)
+### 4. Set Up Airtable
+Get:
+- API Token (via https://airtable.com/create/tokens)
+- Base ID (via https://airtable.com/api)
 
 ### 5. Run Setup
-
 ```bash
 chmod +x setup.sh
 ./setup.sh
 ```
 
-The interactive setup will:
-- Create your local `.env` file with Airtable credentials (gitignored)
-- Test your Airtable connection
-- Run a test health check
-- Configure automated scheduling (daily, twice daily, or every 6 hours)
-- Load the launch agent for automatic execution
-
-### 6. Verify It's Working
-
+### 6. Verify It’s Working
 ```bash
-# Check your Airtable base for new health record
-# View logs
+launchctl list | grep imac-health
 tail -20 ~/Library/Logs/imac_health_monitor.log
-
-# Verify scheduled job is loaded
-launchctl list | grep healthmonitor
 ```
 
 ---
@@ -123,40 +201,36 @@ launchctl list | grep healthmonitor
 
 | Metric | Details | Why It Matters |
 |--------|---------|----------------|
-| **SMART Status** | External boot drive health | Early warning of drive failure |
-| **Kernel Panics** | Crash detection (7 days) | System stability tracking |
-| **System Errors** | Log analysis (1 hour) | Identify recurring issues |
-| **Drive Space** | Usage percentage | Prevent full disk crashes |
-| **Memory Pressure** | RAM usage percentage | Performance indicator |
-| **CPU Temperature** | Real thermal monitoring via osx-cpu-temp | Catch overheating issues |
-| **System Uptime** | Time since boot | Stability metric |
-| **Time Machine** | Last backup timestamp | Data protection verification |
-| **Health Score** | Overall assessment | Quick status overview |
+| SMART Status | Boot drive health | Detect early drive failure |
+| Kernel Panics | Past 7 days | Stability issues |
+| System Errors | Last 1 hour | Recurring problems |
+| Drive Space | Disk usage % | Prevent full disk crash |
+| Memory Pressure | RAM usage | Performance indicator |
+| CPU Temperature | via osx-cpu-temp | Thermal risk detection |
+| System Uptime | Time since boot | Stability metric |
+| Time Machine | Last backup | Data protection |
+| Health Score | Combined evaluation | Quick overview |
 
 ---
 
 ## 💻 Daily Usage
 
-### Run Health Check Manually
-
+### Run Manually
 ```bash
 ./imac_health_monitor.sh
 ```
 
-### View Recent Logs
-
+### View Logs
 ```bash
 tail -50 ~/Library/Logs/imac_health_monitor.log
 ```
 
-### Check Scheduled Job Status
-
+### Check Scheduled Task
 ```bash
 launchctl list | grep healthmonitor
 ```
 
 ### Restart Automated Monitoring
-
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.user.imac.healthmonitor.plist
 launchctl load ~/Library/LaunchAgents/com.user.imac.healthmonitor.plist
@@ -166,15 +240,12 @@ launchctl load ~/Library/LaunchAgents/com.user.imac.healthmonitor.plist
 
 ## 📄 Updating from GitHub
 
-When updates are pushed to the repository:
-
 ```bash
-cd ~/Documents/imac-health-monitor  # your repo location
+cd ~/Documents/imac-health-monitor
 git pull
 ```
 
-Your local `.env` file with credentials is preserved. If configuration requirements change, re-run:
-
+If updated settings:
 ```bash
 ./setup.sh
 ```
@@ -185,99 +256,53 @@ Your local `.env` file with credentials is preserved. If configuration requireme
 
 ```
 imac-health-monitor/
-├── README.md                      # This file
-├── GITHUB_SETUP.md                # Detailed GitHub setup guide
-├── SETUP_GUIDE.md                 # Comprehensive setup documentation
-├── QUICK_REFERENCE.md             # Command cheat sheet
-├── GETTING_STARTED.md             # Quick start guide
-├── imac_health_monitor.sh         # Main monitoring script
-├── setup.sh                       # Interactive setup wizard
-├── test_airtable_connection.sh    # Connection tester
-├── .env.example                   # Credential template
-├── .gitignore                     # Protects sensitive files
-└── .env                           # YOUR credentials (gitignored, you create this)
+├── README.md
+├── GITHUB_SETUP.md
+├── SETUP_GUIDE.md
+├── QUICK_REFERENCE.md
+├── GETTING_STARTED.md
+├── imac_health_monitor.sh
+├── setup.sh
+├── test_airtable_connection.sh
+├── .env.example
+├── .gitignore
+└── .env  (ignored)
 ```
 
 ---
 
 ## 🏥 Health Indicators
 
-### ✅ Healthy System
-- SMART Status: "Verified"
-- Kernel Panics: "No kernel panics in last 7 days"
-- System Errors: Low counts (< 50 errors/hour)
-- Drive Space: < 80% used
-- Health Score: "Healthy"
+### Healthy
+- SMART: Verified  
+- Disk < 80%  
+- Low error counts  
+- Backups recent  
 
-### ⚠️ Attention Needed
-- Drive Space: 80-90% full
-- Elevated error counts: > 100 errors/hour
-- High memory pressure: > 80% consistently
-- Health Score: "Attention Needed"
+### Attention Needed
+- Disk 80–90%  
+- Elevated error counts  
+- Memory pressure > 80%  
 
-### 🚨 Critical Issues
-- SMART Status: "Failed" or changed from "Verified"
-- New kernel panic detected
-- Drive Space: > 90% full
-- High critical error rate: > 50 critical errors/hour
+### Critical
+- SMART failed  
+- Kernel panics  
+- Disk > 90%  
+- Critical error spikes  
 
 ---
 
 ## 🔧 Configuration
 
-### Change Monitoring Schedule
-
-Edit your launch agent:
-
+### Change Schedule
+Edit:
 ```bash
 nano ~/Library/LaunchAgents/com.user.imac.healthmonitor.plist
 ```
 
-**Options:**
-
-**Daily at 9 AM:**
-```xml
-<key>StartCalendarInterval</key>
-<dict>
-    <key>Hour</key>
-    <integer>9</integer>
-    <key>Minute</key>
-    <integer>0</integer>
-</dict>
-```
-
-**Twice daily (9 AM and 9 PM):**
-```xml
-<key>StartCalendarInterval</key>
-<array>
-    <dict>
-        <key>Hour</key>
-        <integer>9</integer>
-    </dict>
-    <dict>
-        <key>Hour</key>
-        <integer>21</integer>
-    </dict>
-</array>
-```
-
-**Every 6 hours:**
-```xml
-<key>StartInterval</key>
-<integer>21600</integer>
-```
-
-After editing, reload:
+### Update Credentials
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.user.imac.healthmonitor.plist
-launchctl load ~/Library/LaunchAgents/com.user.imac.healthmonitor.plist
-```
-
-### Update Airtable Credentials
-
-```bash
-nano .env  # Edit credentials directly
-# Or re-run setup
+nano .env
 ./setup.sh
 ```
 
@@ -285,234 +310,138 @@ nano .env  # Edit credentials directly
 
 ## 🛠 Troubleshooting
 
-### Health Check Not Running Automatically
-
+### Health Check Not Running
 ```bash
-# Check if loaded
 launchctl list | grep healthmonitor
-
-# View error log
 cat ~/Library/Logs/imac_health_monitor_stderr.log
-
-# Reload launch agent
-launchctl unload ~/Library/LaunchAgents/com.user.imac.healthmonitor.plist
-launchctl load ~/Library/LaunchAgents/com.user.imac.healthmonitor.plist
 ```
 
-### Time Machine Shows "No Backups Found"
-
-The script has two methods for detecting Time Machine backups:
-
-**Method 1: Full Disk Access (Recommended)**
-- Grant Full Disk Access to Terminal and `/bin/bash` (see Quick Start step 2)
-- This allows the script to use `tmutil latestbackup` for most reliable detection
-
-**Method 2: Filesystem Access (Automatic Fallback)**
-- If Full Disk Access is not granted, the script automatically falls back to filesystem-based detection
-- Works by directly reading backup folder timestamps
-- Requires Time Machine drive to be mounted when script runs
-
-**If still showing no backups:**
-1. Verify your Time Machine drive is mounted: `tmutil destinationinfo`
-2. Check backup folders exist: `ls /Volumes/YOUR_TM_DRIVE/Backups.backupdb/`
-3. Run manually to see detailed logs: `./imac_health_monitor.sh`
-
-### CPU Temperature Shows "Unavailable"
-
+### CPU Temp Not Showing
 ```bash
-# Check if osx-cpu-temp is installed
-which osx-cpu-temp
-
-# If not installed:
 brew install osx-cpu-temp
-
-# Test it:
 osx-cpu-temp
 ```
 
-### Data Not Appearing in Airtable
-
+### Airtable Issues
 ```bash
-# Verify credentials
-cat .env
-
-# Test Airtable connection
 ./test_airtable_connection.sh
-
-# Run manually to see errors
 ./imac_health_monitor.sh
-
-# Check detailed logs
-tail -100 ~/Library/Logs/imac_health_monitor.log
-```
-
-### Permission Errors
-
-```bash
-# Make scripts executable
-chmod +x imac_health_monitor.sh setup.sh test_airtable_connection.sh
-```
-
-### After `git pull`, Something Broke
-
-Your credentials are safe! Just reconfigure:
-
-```bash
-./setup.sh
 ```
 
 ---
 
 ## 📚 Additional Documentation
 
-- **[GITHUB_SETUP.md](./GITHUB_SETUP.md)** - Complete guide to setting up your GitHub repo
-- **[SETUP_GUIDE.md](./SETUP_GUIDE.md)** - Detailed setup and configuration
-- **[QUICK_REFERENCE.md](./QUICK_REFERENCE.md)** - Command reference and tips
-- **[GETTING_STARTED.md](./GETTING_STARTED.md)** - Quick 3-step workflow
+- [GITHUB_SETUP.md](./GITHUB_SETUP.md)
+- [SETUP_GUIDE.md](./SETUP_GUIDE.md)
+- [QUICK_REFERENCE.md](./QUICK_REFERENCE.md)
+- [GETTING_STARTED.md](./GETTING_STARTED.md)
 
 ---
 
-## 🎯 Use Case: Real-World Example
+## 🎯 Use Case (Real-World Example)
 
-**The Problem:**
-- 2019 iMac experienced kernel panic
-- Internal Fusion Drive failed catastrophically
-- No warning before complete boot failure
-- System had to be recovered from Time Machine to external SSD
+A 2019 iMac suffered a Fusion Drive failure without warning.  
+This system now provides:
 
-**The Solution:**
-This monitoring system now provides:
-- Daily SMART status checks on the external boot SSD
-- Kernel panic detection and tracking
-- Drive space monitoring to prevent full disk issues
-- Historical data for troubleshooting patterns
-- Peace of mind through proactive monitoring
-
-**Current Setup:**
-- iMac19,1 (2019) with 72GB RAM
-- Boot drive: SanDisk PRO-G40 1TB Thunderbolt 3 SSD
-- Monitoring: Daily health checks to Airtable
-- Result: Early warning system for hardware issues
+- SMART drive checks  
+- Kernel panic detection  
+- Uptime + thermal data  
+- Time Machine verification  
+- Historical trends for diagnosis  
 
 ---
 
 ## 🚀 Advanced Features
 
-### Multiple Mac Monitoring
-
-Monitor multiple Macs with the same Airtable base:
-
+### Multi-Mac Monitoring
 ```bash
-# On each Mac, clone and setup
 git clone https://github.com/YOUR_USERNAME/imac-health-monitor.git
 cd imac-health-monitor
-./setup.sh  # Each Mac gets its own .env
+./setup.sh
 ```
 
-Each Mac reports to the same Airtable base with its unique hostname, allowing centralized monitoring.
-
 ### Airtable Automations
+Examples:
+- Email alert when Health Score = Attention Needed  
+- Slack notifications
 
-Set up alerts in Airtable:
-1. Go to "Automations" in your base
-2. Trigger: "When Health Score = 'Attention Needed'"
-3. Action: "Send email" or "Send to Slack"
-4. Get notified immediately when issues are detected
-
-### Custom Dashboards
-
-Connect Airtable to:
-- **Airtable Interfaces** - Build custom dashboards
-- **Google Data Studio** - Create charts and graphs
-- **Zapier** - Advanced integrations
-- **iOS Shortcuts** - Quick access from phone
+### Dashboards
+- Temperature trends  
+- Disk usage graphs  
+- Backup age charts  
 
 ---
 
 ## 🔐 Security Best Practices
 
-### What's Safe to Commit (and is in repo)
-- ✅ All `.sh` scripts
-- ✅ All `.md` documentation  
-- ✅ `.env.example` (template only, no real credentials)
-- ✅ `.gitignore` configuration
+### Safe to Commit
+- `.sh`  
+- `.md`  
+- `.env.example`
 
-### What's Never Committed (gitignored)
-- ❌ `.env` (your actual Airtable API credentials)
-- ❌ `*.log` files (log output)
-- ❌ `.DS_Store` (macOS system files)
-- ❌ Any files with sensitive data
+### Never Commit
+- `.env`  
+- `.DS_Store`  
+- Logs  
 
-### If You Accidentally Commit Credentials
-
+If a key leaks:
 ```bash
-# Remove from repo but keep locally
 git rm --cached .env
-git commit -m "Remove .env from repository"
+git commit -m "Remove .env"
 git push
-
-# CRITICAL: Immediately rotate your Airtable API token
-# Go to https://airtable.com/create/tokens and create new token
 ```
+Rotate your Airtable token immediately.
 
 ---
 
 ## 📈 Roadmap
 
-Potential future enhancements:
-- [ ] Network connectivity monitoring
-- [ ] Disk I/O performance tracking
-- [ ] Application-specific monitoring
-- [ ] Email/SMS alert integration
-- [ ] Web dashboard interface
-- [ ] Battery health monitoring (for laptops)
-- [ ] GPU temperature tracking
+- Disk I/O performance  
+- GPU temperature  
+- Laptop battery health  
+- SMS/email notifications  
+- Web dashboard  
 
 ---
 
 ## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+```bash
+git checkout -b feature/MyFeature
+git commit -m "Add MyFeature"
+git push origin feature/MyFeature
+```
+Open a pull request anytime.
 
 ---
 
 ## 📄 License
-
-This project is licensed under the MIT License - feel free to use and modify as needed.
+MIT License
 
 ---
 
 ## 🙏 Acknowledgments
-
-- Built with macOS native tools (diskutil, log, tmutil, vm_stat)
-- Airtable for flexible data storage and visualization
-- [osx-cpu-temp](https://github.com/lavoiesl/osx-cpu-temp) for CPU temperature monitoring
+- macOS native tools  
+- Airtable  
+- [osx-cpu-temp](https://github.com/lavoiesl/osx-cpu-temp)
 
 ---
 
 ## 📞 Support
-
-- **Issues**: Open an issue on GitHub
-- **Documentation**: Check the docs in the repository
-- **Airtable Help**: https://support.airtable.com/
+- GitHub Issues  
+- Repository Documentation  
+- Airtable Support  
 
 ---
 
 ## 🎉 Getting Started
 
-Ready to set up your monitoring system?
+1. [Install dependencies](#1-install-homebrew-and-dependencies)
+2. [Grant Full Disk Access](#2-grant-full-disk-access-recommended)
+3. [Clone the repo](#3-clone-the-repository)
+4. [Set up Airtable](#4-set-up-airtable-5-minutes)
+5. [Run setup](#5-run-setup)
+6. [Verify it's working](#6-verify-its-working)
 
-1. **[Install dependencies](#1-install-homebrew-and-dependencies)**
-2. **[Grant Full Disk Access](#2-grant-full-disk-access-recommended)**
-3. **[Clone the repo](#3-clone-the-repository)**
-4. **[Set up Airtable](#4-set-up-airtable-5-minutes)**
-5. **[Run setup](#5-run-setup)**
-6. **[Verify it's working](#6-verify-its-working)**
+Your Mac will thank you! 🖥️💚
 
-Your Mac will thank you for the proactive care! 🖥️💚
