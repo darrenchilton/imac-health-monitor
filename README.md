@@ -202,7 +202,7 @@ tail -20 ~/Library/Logs/imac_health_monitor.log
 | Metric | Details | Why It Matters |
 |--------|---------|----------------|
 | SMART Status | Boot drive health | Detect early drive failure |
-| Kernel Panics | Past 7 days | Stability issues |
+| Kernel Panics | Last 24 hours | Stability issues
 | System Errors | Last 1 hour | Recurring problems |
 | Drive Space | Disk usage % | Prevent full disk crash |
 | Memory Pressure | RAM usage | Performance indicator |
