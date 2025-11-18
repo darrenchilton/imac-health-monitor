@@ -20,8 +20,8 @@ Proactive health monitoring system for macOS that tracks your system's vital sig
 - ✅ **System error tracking** - Monitor log errors and critical events
 - ✅ **Drive space monitoring** - Prevent full disk issues
 - ✅ **Memory pressure tracking** - Performance indicators
-- ✅ **CPU temperature** - Real-time thermal monitoring (with osx-cpu-temp)
-- ✅ **Time Machine verification** - Backup status checks
+- ✅ **CPU temperature** - Real-time thermal monitoring with osx-cpu-temp
+- ✅ **Time Machine verification** - Intelligent backup status checks (works with or without Full Disk Access)
 - ✅ **Historical tracking** - All data stored in Airtable with timestamps
 - ✅ **Automated scheduling** - Daily/hourly checks via launchd
 - ✅ **Health scoring** - Quick status overview
@@ -41,11 +41,39 @@ Proactive health monitoring system for macOS that tracks your system's vital sig
 
 ### Prerequisites
 
-- macOS Sonoma or later (should work on earlier versions)
-- Airtable account (free tier works great)
-- Homebrew (optional, for CPU temperature monitoring)
+- **macOS Sonoma or later** (should work on earlier versions)
+- **Airtable account** (free tier works great)
+- **Homebrew** - Required for CPU temperature monitoring
+- **Full Disk Access** (recommended) - For complete Time Machine backup detection
 
-### 1. Clone the Repository
+### 1. Install Homebrew and Dependencies
+
+If you don't have Homebrew installed:
+
+```bash
+# Install Homebrew
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install osx-cpu-temp (required for CPU temperature monitoring)
+brew install osx-cpu-temp
+```
+
+### 2. Grant Full Disk Access (Recommended)
+
+For optimal Time Machine backup detection, grant Full Disk Access:
+
+1. Open **System Settings** → **Privacy & Security** → **Full Disk Access**
+2. Click the **+** button
+3. Add **Terminal** (`/Applications/Utilities/Terminal.app`)
+4. For automated monitoring, also add `/bin/bash`:
+   - Click **+**, press **Cmd+Shift+G**
+   - Type `/bin/bash` and click Go
+   - Add it to the list
+5. Toggle both **ON**
+
+**Note:** The script works without Full Disk Access using filesystem-based backup detection, but FDA provides more reliable results.
+
+### 3. Clone the Repository
 
 ```bash
 cd ~/Documents  # or wherever you want to keep it
@@ -53,7 +81,7 @@ git clone https://github.com/YOUR_USERNAME/imac-health-monitor.git
 cd imac-health-monitor
 ```
 
-### 2. Set Up Airtable (5 minutes)
+### 4. Set Up Airtable (5 minutes)
 
 1. Go to [airtable.com](https://airtable.com) and sign in (or create free account)
 2. Create a new base called **"iMac System Health"**
@@ -64,7 +92,7 @@ cd imac-health-monitor
      - Add your "iMac System Health" base to the token's access list
    - **Base ID**: Go to https://airtable.com/api, click your base, find the ID in the URL (starts with `app`)
 
-### 3. Run Setup
+### 5. Run Setup
 
 ```bash
 chmod +x setup.sh
@@ -78,7 +106,7 @@ The interactive setup will:
 - Configure automated scheduling (daily, twice daily, or every 6 hours)
 - Load the launch agent for automatic execution
 
-### 4. Verify It's Working
+### 6. Verify It's Working
 
 ```bash
 # Check your Airtable base for new health record
@@ -100,29 +128,10 @@ launchctl list | grep healthmonitor
 | **System Errors** | Log analysis (1 hour) | Identify recurring issues |
 | **Drive Space** | Usage percentage | Prevent full disk crashes |
 | **Memory Pressure** | RAM usage percentage | Performance indicator |
-| **CPU Temperature** | Thermal monitoring | Catch overheating issues |
+| **CPU Temperature** | Real thermal monitoring via osx-cpu-temp | Catch overheating issues |
 | **System Uptime** | Time since boot | Stability metric |
 | **Time Machine** | Last backup timestamp | Data protection verification |
 | **Health Score** | Overall assessment | Quick status overview |
-
----
-
-## 🌡️ CPU Temperature Monitoring (Optional Enhancement)
-
-For real CPU temperature readings instead of placeholder text:
-
-```bash
-# Install Homebrew if needed
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install osx-cpu-temp
-brew install osx-cpu-temp
-
-# Update the script's get_cpu_temp() function to use osx-cpu-temp
-# The function should call: osx-cpu-temp
-```
-
-After installation, the script will automatically report actual CPU temperatures to Airtable.
 
 ---
 
@@ -155,7 +164,7 @@ launchctl load ~/Library/LaunchAgents/com.user.imac.healthmonitor.plist
 
 ---
 
-## 🔄 Updating from GitHub
+## 📄 Updating from GitHub
 
 When updates are pushed to the repository:
 
@@ -274,7 +283,7 @@ nano .env  # Edit credentials directly
 
 ---
 
-## 🐛 Troubleshooting
+## 🛠 Troubleshooting
 
 ### Health Check Not Running Automatically
 
@@ -288,6 +297,37 @@ cat ~/Library/Logs/imac_health_monitor_stderr.log
 # Reload launch agent
 launchctl unload ~/Library/LaunchAgents/com.user.imac.healthmonitor.plist
 launchctl load ~/Library/LaunchAgents/com.user.imac.healthmonitor.plist
+```
+
+### Time Machine Shows "No Backups Found"
+
+The script has two methods for detecting Time Machine backups:
+
+**Method 1: Full Disk Access (Recommended)**
+- Grant Full Disk Access to Terminal and `/bin/bash` (see Quick Start step 2)
+- This allows the script to use `tmutil latestbackup` for most reliable detection
+
+**Method 2: Filesystem Access (Automatic Fallback)**
+- If Full Disk Access is not granted, the script automatically falls back to filesystem-based detection
+- Works by directly reading backup folder timestamps
+- Requires Time Machine drive to be mounted when script runs
+
+**If still showing no backups:**
+1. Verify your Time Machine drive is mounted: `tmutil destinationinfo`
+2. Check backup folders exist: `ls /Volumes/YOUR_TM_DRIVE/Backups.backupdb/`
+3. Run manually to see detailed logs: `./imac_health_monitor.sh`
+
+### CPU Temperature Shows "Unavailable"
+
+```bash
+# Check if osx-cpu-temp is installed
+which osx-cpu-temp
+
+# If not installed:
+brew install osx-cpu-temp
+
+# Test it:
+osx-cpu-temp
 ```
 
 ### Data Not Appearing in Airtable
@@ -442,7 +482,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ---
 
-## 📝 License
+## 📄 License
 
 This project is licensed under the MIT License - feel free to use and modify as needed.
 
@@ -468,9 +508,11 @@ This project is licensed under the MIT License - feel free to use and modify as 
 
 Ready to set up your monitoring system?
 
-1. **[Clone the repo](#1-clone-the-repository)**
-2. **[Set up Airtable](#2-set-up-airtable-5-minutes)**
-3. **[Run setup](#3-run-setup)**
-4. **[Verify it's working](#4-verify-its-working)**
+1. **[Install dependencies](#1-install-homebrew-and-dependencies)**
+2. **[Grant Full Disk Access](#2-grant-full-disk-access-recommended)**
+3. **[Clone the repo](#3-clone-the-repository)**
+4. **[Set up Airtable](#4-set-up-airtable-5-minutes)**
+5. **[Run setup](#5-run-setup)**
+6. **[Verify it's working](#6-verify-its-working)**
 
 Your Mac will thank you for the proactive care! 🖥️💚
