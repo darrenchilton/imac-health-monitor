@@ -5,6 +5,7 @@
 # Collects system health metrics and sends to Airtable
 # Created: November 17, 2025
 # Updated: Kernel panic window = last 24 hours, improved Health Score logic
+# Note: This version includes more robust local checks and error handling.
 ################################################################################
 
 # Determine script location
@@ -42,106 +43,221 @@ log_message() {
 
 log_message "=== Starting iMac Health Check ==="
 
-# Function to get SMART status for external boot drive
+###############################################################################
+# Helper utilities for robustness
+###############################################################################
+
+# Helper: command availability
+have_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Helper: run with timeout if available (gtimeout/timeout), otherwise no timeout
+safe_timeout() {
+    local seconds="$1"; shift
+
+    if have_cmd gtimeout; then
+        gtimeout "${seconds}s" "$@"
+    elif have_cmd timeout; then
+        timeout "${seconds}s" "$@"
+    else
+        # No timeout tool; just run the command (better than silently skipping)
+        "$@"
+    fi
+}
+
+# Helper: safely capture output of a function/command without letting failures
+# poison downstream logic.
+# Usage: safe_get VAR_NAME some_function
+safe_get() {
+    local __var="$1"; shift
+    local __out rc
+
+    __out="$("$@" 2>&1)"
+    rc=$?
+
+    if [ $rc -ne 0 ]; then
+        log_message "WARN: $* failed with rc=$rc, output: $__out"
+        __out="Unavailable (error running $*)"
+    fi
+
+    printf -v "$__var" '%s' "$__out"
+}
+
+###############################################################################
+# SMART status for external boot drive
+###############################################################################
+
 get_smart_status() {
-    # Get the boot drive identifier
-    BOOT_DRIVE=$(diskutil info / | grep "Device Node:" | awk '{print $3}')
-    
+    if ! have_cmd diskutil; then
+        log_message "WARN: diskutil not found; SMART status unavailable"
+        echo "Not Available"
+        return 0
+    fi
+
+    local BOOT_DRIVE DISK_ID SMART_OUTPUT SMART_STATUS
+
+    BOOT_DRIVE=$(diskutil info / 2>/dev/null | awk -F': *' '/Device Node:/ {print $2}')
+    if [ -z "$BOOT_DRIVE" ]; then
+        log_message "WARN: Unable to determine boot drive"
+        echo "Not Available"
+        return 0
+    fi
+
     # Get disk identifier without partition (e.g., disk2s1 -> disk2)
     DISK_ID=$(echo "$BOOT_DRIVE" | sed 's/s[0-9]*$//')
-    
-    log_message "Checking SMART status for boot drive: $DISK_ID" >&2
-    
-    # Get SMART status
-    SMART_OUTPUT=$(diskutil info "$DISK_ID" 2>&1)
-    SMART_STATUS=$(echo "$SMART_OUTPUT" | grep "SMART Status:" | awk -F: '{print $2}' | xargs)
-    
+
+    log_message "Checking SMART status for boot drive: $DISK_ID"
+
+    SMART_OUTPUT=$(diskutil info "$DISK_ID" 2>/dev/null)
+    SMART_STATUS=$(echo "$SMART_OUTPUT" | awk -F': *' '/SMART Status:/ {print $2}' | xargs)
+
     if [ -z "$SMART_STATUS" ]; then
         SMART_STATUS="Not Available"
     fi
-    
+
     echo "$SMART_STATUS"
 }
 
-# Function to check for recent kernel panics (last 24 hours)
+###############################################################################
+# Kernel panics (last 24 hours)
+###############################################################################
 # Returns: "<COUNT>|<HUMAN_READABLE_MESSAGE>"
 check_kernel_panics() {
-    log_message "Checking for kernel panics..." >&2
-    
-    # Check for panic logs in the last 24 hours (1440 minutes)
+    log_message "Checking for kernel panics..."
+
+    local LOG_DIR="/Library/Logs/DiagnosticReports"
+
+    if [ ! -d "$LOG_DIR" ]; then
+        echo "0|No DiagnosticReports directory found"
+        return 0
+    fi
+
     local COUNT
-    COUNT=$(find /Library/Logs/DiagnosticReports -name "Kernel_*.panic" -mmin -1440 2>/dev/null | wc -l | xargs)
-    
+    COUNT=$(find "$LOG_DIR" -name "Kernel_*.panic" -mmin -1440 2>/dev/null | wc -l | xargs)
+
     # Ensure COUNT is numeric
     if ! [[ "$COUNT" =~ ^[0-9]+$ ]]; then
         COUNT=0
     fi
-    
+
     if [ "$COUNT" -gt 0 ]; then
         local LATEST_PANIC
-        LATEST_PANIC=$(find /Library/Logs/DiagnosticReports -name "Kernel_*.panic" -mmin -1440 2>/dev/null | head -1)
-        local MSG="Found $COUNT panic(s) in last 24 hours. Latest: $(basename "$LATEST_PANIC" 2>/dev/null)"
+        # Sort by mtime and take the newest
+        LATEST_PANIC=$(find "$LOG_DIR" -name "Kernel_*.panic" -mmin -1440 -print0 2>/dev/null \
+            | xargs -0 ls -1t 2>/dev/null | head -1)
+        local MSG="Found $COUNT panic(s) in last 24 hours."
+        if [ -n "$LATEST_PANIC" ]; then
+            MSG+=" Latest: $(basename "$LATEST_PANIC")"
+        fi
         echo "${COUNT}|${MSG}"
     else
         echo "0|No kernel panics in last 24 hours"
     fi
 }
 
-# Function to check system log for errors
+###############################################################################
+# System log errors (last 1 hour)
+###############################################################################
 check_system_errors() {
-    log_message "Checking system logs for errors..." >&2
-    
-    # Use faster method - check last 1 hour instead of 24h, with timeout
-    ERROR_COUNT=$(timeout 10 log show --predicate 'messageType == error' --last 1h 2>/dev/null | wc -l || echo "0")
-    CRITICAL_COUNT=$(timeout 10 log show --predicate 'messageType == fault' --last 1h 2>/dev/null | wc -l || echo "0")
-    
-    # If timeout occurred, use placeholder
-    if [ "$ERROR_COUNT" = "0" ] && [ "$CRITICAL_COUNT" = "0" ]; then
-        echo "Log check skipped (too slow)"
-    else
-        echo "Errors: $ERROR_COUNT, Critical: $CRITICAL_COUNT (last 1h)"
+    log_message "Checking system logs for errors..."
+
+    if ! have_cmd log; then
+        echo "System log tool not available"
+        return 0
     fi
+
+    local ERROR_COUNT CRITICAL_COUNT rc_err rc_crit
+
+    # Errors
+    ERROR_COUNT=$(safe_timeout 10 log show --predicate 'messageType == error' --last 1h 2>/dev/null | wc -l)
+    rc_err=$?
+    # Critical/fault
+    CRITICAL_COUNT=$(safe_timeout 10 log show --predicate 'messageType == fault' --last 1h 2>/dev/null | wc -l)
+    rc_crit=$?
+
+    # If both timed out or failed, say so
+    if [ $rc_err -ne 0 ] && [ $rc_crit -ne 0 ]; then
+        log_message "WARN: log show commands timed out or failed"
+        echo "Log check unavailable (error or timeout)"
+        return 0
+    fi
+
+    # Normalize empty values
+    [ -z "$ERROR_COUNT" ] && ERROR_COUNT=0
+    [ -z "$CRITICAL_COUNT" ] && CRITICAL_COUNT=0
+
+    echo "Errors: $ERROR_COUNT, Critical: $CRITICAL_COUNT (last 1h)"
 }
 
-# Function to get drive space info
+###############################################################################
+# Drive space info
+###############################################################################
 get_drive_space() {
-    log_message "Checking drive space..." >&2
-    
-    # Use the filesystem that contains the home directory (usually the data volume)
-    BOOT_INFO=$(df -h "$HOME" | tail -1)
+    log_message "Checking drive space..."
+
+    if ! have_cmd df; then
+        echo "Total: Unknown, Used: Unknown (Unknown), Available: Unknown"
+        return 0
+    fi
+
+    local BOOT_INFO TOTAL USED AVAILABLE PERCENT_USED
+    BOOT_INFO=$(df -h "$HOME" 2>/dev/null | tail -1)
+
+    if [ -z "$BOOT_INFO" ]; then
+        echo "Total: Unknown, Used: Unknown (Unknown), Available: Unknown"
+        return 0
+    fi
 
     TOTAL=$(echo "$BOOT_INFO" | awk '{print $2}')
     USED=$(echo "$BOOT_INFO" | awk '{print $3}')
     AVAILABLE=$(echo "$BOOT_INFO" | awk '{print $4}')
     PERCENT_USED=$(echo "$BOOT_INFO" | awk '{print $5}')
-    
+
     echo "Total: $TOTAL, Used: $USED ($PERCENT_USED), Available: $AVAILABLE"
 }
 
-
-# Function to get system uptime
+###############################################################################
+# System uptime
+###############################################################################
 get_uptime() {
-    UPTIME=$(uptime | awk -F'up ' '{print $2}' | awk -F',' '{print $1}')
+    local UPTIME
+    UPTIME=$(uptime 2>/dev/null | awk -F'up ' '{print $2}' | awk -F',' '{print $1}')
+    [ -z "$UPTIME" ] && UPTIME="Unknown"
     echo "$UPTIME"
 }
 
-# Function to get memory pressure
+###############################################################################
+# Memory pressure
+###############################################################################
 get_memory_pressure() {
-    MEMORY_INFO=$(vm_stat | awk '
-        /Pages free/ {free=$3}
-        /Pages active/ {active=$3}
-        /Pages inactive/ {inactive=$3}
-        /Pages wired/ {wired=$3}
+    if ! have_cmd vm_stat; then
+        echo "Unavailable"
+        return 0
+    fi
+
+    local MEMORY_INFO
+    MEMORY_INFO=$(vm_stat 2>/dev/null | awk '
+        /Pages free/     {gsub("\\.", "", $3); free=$3}
+        /Pages active/   {gsub("\\.", "", $3); active=$3}
+        /Pages inactive/ {gsub("\\.", "", $3); inactive=$3}
+        /Pages wired/    {gsub("\\.", "", $3); wired=$3}
         END {
             total = free + active + inactive + wired
-            used_percent = ((active + wired) / total) * 100
-            printf "%.1f%% used", used_percent
+            if (total <= 0) {
+                print "Unavailable"
+            } else {
+                used_percent = ((active + wired) / total) * 100
+                printf "%.1f%% used", used_percent
+            }
         }
     ')
     echo "$MEMORY_INFO"
 }
 
-# Function to get CPU temperature (if available)
+###############################################################################
+# CPU temperature (if available)
+###############################################################################
 get_cpu_temp() {
     # Try common Homebrew locations first
     if [ -x "/opt/homebrew/bin/osx-cpu-temp" ]; then
@@ -155,7 +271,7 @@ get_cpu_temp() {
     fi
 
     # Fallback: rely on PATH (interactive shells)
-    if command -v osx-cpu-temp >/dev/null 2>&1; then
+    if have_cmd osx-cpu-temp; then
         osx-cpu-temp
         return
     fi
@@ -163,10 +279,11 @@ get_cpu_temp() {
     echo "Unavailable"
 }
 
-# Function to check Time Machine backup status
-# This version works WITHOUT Full Disk Access by using filesystem access
+###############################################################################
+# Time Machine backup status (no FDA required)
+###############################################################################
 check_time_machine() {
-    log_message "Checking Time Machine status..." >&2
+    log_message "Checking Time Machine status..."
 
     local STATUS="Not configured"
 
@@ -195,7 +312,7 @@ check_time_machine() {
     # Try tmutil commands first (require Full Disk Access)
     local TM_LATEST
     TM_LATEST=$(tmutil latestbackup 2>/dev/null || true)
-    
+
     if [ -n "$TM_LATEST" ] && ! echo "$TM_LATEST" | grep -q "requires Full Disk Access"; then
         # Success with tmutil latestbackup
         if [[ "$TM_LATEST" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}) ]]; then
@@ -239,7 +356,7 @@ check_time_machine() {
     if [ -d "$BACKUP_DIR" ]; then
         local LATEST_BACKUP
         LATEST_BACKUP=$(ls -1 "$BACKUP_DIR" 2>/dev/null | grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$" | tail -1)
-        
+
         if [ -n "$LATEST_BACKUP" ]; then
             local DATE_PART="${LATEST_BACKUP:0:10}"
             local TIME_PART="${LATEST_BACKUP:11:2}:${LATEST_BACKUP:13:2}:${LATEST_BACKUP:15:2}"
@@ -250,11 +367,11 @@ check_time_machine() {
 
     # Check APFS snapshot-style backups
     local ALT_BACKUP_DIR="$MOUNT_POINT/.timemachine"
-    
+
     if [ -d "$ALT_BACKUP_DIR" ]; then
         local LATEST_BACKUP
         LATEST_BACKUP=$(find "$ALT_BACKUP_DIR" -maxdepth 2 -name "*.backup" -type d 2>/dev/null | sort | tail -1)
-        
+
         if [ -n "$LATEST_BACKUP" ]; then
             local BACKUP_NAME
             BACKUP_NAME=$(basename "$LATEST_BACKUP" .backup)
@@ -274,23 +391,26 @@ check_time_machine() {
     echo "$STATUS; Drive mounted, checking filesystem access..."
 }
 
+###############################################################################
 # Collect all metrics
+###############################################################################
 TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
-HOSTNAME=$(hostname)
-SMART_STATUS=$(get_smart_status)
+HOSTNAME=$(hostname 2>/dev/null || echo "Unknown")
+
+safe_get SMART_STATUS get_smart_status
 
 # Kernel panics: get count + human-readable message
-KERNEL_PANIC_RAW=$(check_kernel_panics)
+safe_get KERNEL_PANIC_RAW check_kernel_panics
 KERNEL_PANIC_COUNT=${KERNEL_PANIC_RAW%%|*}
 KERNEL_PANICS=${KERNEL_PANIC_RAW#*|}
 
-SYSTEM_ERRORS=$(check_system_errors)
-DRIVE_SPACE=$(get_drive_space)
-UPTIME=$(get_uptime)
-MEMORY=$(get_memory_pressure)
-CPU_TEMP=$(get_cpu_temp)
-TM_STATUS=$(check_time_machine)
-MACOS_VERSION=$(sw_vers -productVersion)
+safe_get SYSTEM_ERRORS  check_system_errors
+safe_get DRIVE_SPACE    get_drive_space
+safe_get UPTIME         get_uptime
+safe_get MEMORY         get_memory_pressure
+safe_get CPU_TEMP       get_cpu_temp
+safe_get TM_STATUS      check_time_machine
+MACOS_VERSION=$(sw_vers -productVersion 2>/dev/null || echo "Unknown")
 
 log_message "Metrics collected successfully"
 
@@ -299,8 +419,14 @@ log_message "Metrics collected successfully"
 ###############################################################################
 
 # Disk usage: extract percentage from "Used (Z%)"
-PERCENT_USED_NUM=$(echo "$DRIVE_SPACE" | sed -n 's/.*(\([0-9]\+\)%).*/\1/p')
-[ -z "$PERCENT_USED_NUM" ] && PERCENT_USED_NUM=0
+PERCENT_USED_NUM=$(echo "$DRIVE_SPACE" \
+    | grep -Eo '\([0-9]+%\)' \
+    | tr -d '()%' \
+    | head -1)
+# Fallback if not numeric
+if ! [[ "$PERCENT_USED_NUM" =~ ^[0-9]+$ ]]; then
+    PERCENT_USED_NUM=0
+fi
 
 # CPU temperature: extract numeric part from "56.8°C"
 CPU_TEMP_NUM=$(echo "$CPU_TEMP" | sed 's/[^0-9.]//g')
@@ -311,10 +437,14 @@ fi
 
 # System errors
 ERROR_COUNT_NUM=$(echo "$SYSTEM_ERRORS" | sed -n 's/Errors: \([0-9]\+\).*/\1/p')
-[ -z "$ERROR_COUNT_NUM" ] && ERROR_COUNT_NUM=0
+if ! [[ "$ERROR_COUNT_NUM" =~ ^[0-9]+$ ]]; then
+    ERROR_COUNT_NUM=0
+fi
 
 CRITICAL_COUNT_NUM=$(echo "$SYSTEM_ERRORS" | sed -n 's/.*Critical: \([0-9]\+\).*/\1/p')
-[ -z "$CRITICAL_COUNT_NUM" ] && CRITICAL_COUNT_NUM=0
+if ! [[ "$CRITICAL_COUNT_NUM" =~ ^[0-9]+$ ]]; then
+    CRITICAL_COUNT_NUM=0
+fi
 
 ###############################################################################
 # Time Machine - compute days since last backup (if present)
@@ -360,39 +490,39 @@ if [ "$SMART_STATUS" != "Verified" ] && [ "$SMART_STATUS" != "Not Available" ]; 
 fi
 
 ### Kernel panics (24h)
-if [ "$KERNEL_PANIC_COUNT" -gt 0 ]; then
+if [ "$KERNEL_PANIC_COUNT" -gt 0 ] 2>/dev/null; then
     bump_to_critical
     REASONS+="Kernel panics in last 24 hours: $KERNEL_PANIC_COUNT. "
 fi
 
 ### Disk usage thresholds
-if [ "$PERCENT_USED_NUM" -ge 90 ]; then
+if [ "$PERCENT_USED_NUM" -ge 90 ] 2>/dev/null; then
     bump_to_critical
     REASONS+="Disk usage ${PERCENT_USED_NUM}% (>= 90%). "
-elif [ "$PERCENT_USED_NUM" -ge 80 ]; then
+elif [ "$PERCENT_USED_NUM" -ge 80 ] 2>/dev/null; then
     bump_to_warning
     REASONS+="Disk usage ${PERCENT_USED_NUM}% (>= 80%). "
 fi
 
 ### CPU temp thresholds
-if [ "$CPU_TEMP_INT" -ge 85 ] && [ "$CPU_TEMP_INT" -lt 120 ]; then
+if [ "$CPU_TEMP_INT" -ge 85 ] 2>/dev/null && [ "$CPU_TEMP_INT" -lt 120 ] 2>/dev/null; then
     bump_to_critical
     REASONS+="CPU temp ${CPU_TEMP_INT}°C (>= 85°C). "
-elif [ "$CPU_TEMP_INT" -ge 80 ] && [ "$CPU_TEMP_INT" -lt 85 ]; then
+elif [ "$CPU_TEMP_INT" -ge 80 ] 2>/dev/null && [ "$CPU_TEMP_INT" -lt 85 ] 2>/dev/null; then
     bump_to_warning
     REASONS+="CPU temp ${CPU_TEMP_INT}°C (>= 80°C). "
 fi
 
 ### System logs
-if [ "$CRITICAL_COUNT_NUM" -gt 0 ]; then
+if [ "$CRITICAL_COUNT_NUM" -gt 0 ] 2>/dev/null; then
     bump_to_critical
     REASONS+="Critical log messages: ${CRITICAL_COUNT_NUM}. "
 fi
 
-if [ "$ERROR_COUNT_NUM" -gt 2000 ]; then
+if [ "$ERROR_COUNT_NUM" -gt 2000 ] 2>/dev/null; then
     bump_to_critical
     REASONS+="Error count very high (${ERROR_COUNT_NUM}). "
-elif [ "$ERROR_COUNT_NUM" -gt 500 ]; then
+elif [ "$ERROR_COUNT_NUM" -gt 500 ] 2>/dev/null; then
     bump_to_warning
     REASONS+="Error count elevated (${ERROR_COUNT_NUM}). "
 fi
@@ -401,10 +531,10 @@ fi
 if [ "$TM_NEEDS_ATTENTION" = true ]; then
     bump_to_critical
     REASONS+="Time Machine not configured or destination missing. "
-elif [ "$TM_LAST_BACKUP_DAYS" -ge 7 ]; then
+elif [ "$TM_LAST_BACKUP_DAYS" -ge 7 ] 2>/dev/null; then
     bump_to_critical
     REASONS+="Last Time Machine backup ${TM_LAST_BACKUP_DAYS} days ago (>= 7 days). "
-elif [ "$TM_LAST_BACKUP_DAYS" -ge 3 ]; then
+elif [ "$TM_LAST_BACKUP_DAYS" -ge 3 ] 2>/dev/null; then
     bump_to_warning
     REASONS+="Last Time Machine backup ${TM_LAST_BACKUP_DAYS} days ago (>= 3 days). "
 fi
@@ -421,12 +551,46 @@ if [ -z "$REASONS" ]; then
     REASONS="All checks passed within defined thresholds."
 fi
 
+###############################################################################
+# Prepare JSON payload for Airtable (robust to special characters if jq present)
+###############################################################################
+JSON_PAYLOAD=""
 
-
-
-
-# Prepare JSON payload for Airtable
-JSON_PAYLOAD=$(cat <<EOF
+if have_cmd jq; then
+    JSON_PAYLOAD=$(jq -n \
+      --arg ts "$TIMESTAMP" \
+      --arg host "$HOSTNAME" \
+      --arg ver "$MACOS_VERSION" \
+      --arg smart "$SMART_STATUS" \
+      --arg kp "$KERNEL_PANICS" \
+      --arg sys_err "$SYSTEM_ERRORS" \
+      --arg disk "$DRIVE_SPACE" \
+      --arg up "$UPTIME" \
+      --arg mem "$MEMORY" \
+      --arg cpu "$CPU_TEMP" \
+      --arg tm "$TM_STATUS" \
+      --arg health "$HEALTH_SCORE" \
+      --arg severity "$SEVERITY" \
+      --arg reasons "$REASONS" \
+      '{fields: {
+          "Timestamp": $ts,
+          "Hostname": $host,
+          "macOS Version": $ver,
+          "SMART Status": $smart,
+          "Kernel Panics": $kp,
+          "System Errors": $sys_err,
+          "Drive Space": $disk,
+          "Uptime": $up,
+          "Memory Pressure": $mem,
+          "CPU Temperature": $cpu,
+          "Time Machine": $tm,
+          "Health Score": $health,
+          "Severity": $severity,
+          "Reasons": $reasons
+      }}')
+else
+    log_message "WARN: jq not installed; building JSON without escaping (may break on special characters)"
+    JSON_PAYLOAD=$(cat <<EOF
 {
   "fields": {
     "Timestamp": "$TIMESTAMP",
@@ -447,9 +611,11 @@ JSON_PAYLOAD=$(cat <<EOF
 }
 EOF
 )
+fi
 
-
-
+###############################################################################
+# Send to Airtable
+###############################################################################
 
 # Debug: Log the JSON payload
 echo "DEBUG: JSON Payload:" >> "$LOG_FILE"
@@ -457,7 +623,6 @@ echo "$JSON_PAYLOAD" >> "$LOG_FILE"
 
 log_message "Sending data to Airtable..."
 
-# Send to Airtable
 TABLE_ENCODED=$(echo "$AIRTABLE_TABLE_NAME" | sed 's/ /%20/g')
 RESPONSE=$(curl -s -X POST "https://api.airtable.com/v0/$AIRTABLE_BASE_ID/$TABLE_ENCODED" \
   -H "Authorization: Bearer $AIRTABLE_API_KEY" \
@@ -467,7 +632,11 @@ RESPONSE=$(curl -s -X POST "https://api.airtable.com/v0/$AIRTABLE_BASE_ID/$TABLE
 # Check if successful
 if echo "$RESPONSE" | grep -q '"id"'; then
     log_message "✓ Data successfully sent to Airtable"
-    echo "$RESPONSE" | jq '.' >> "$LOG_FILE" 2>/dev/null
+    if have_cmd jq; then
+        echo "$RESPONSE" | jq '.' >> "$LOG_FILE" 2>/dev/null
+    else
+        echo "$RESPONSE" >> "$LOG_FILE" 2>/dev/null
+    fi
 else
     log_message "✗ ERROR: Failed to send data to Airtable"
     log_message "Response: $RESPONSE"
