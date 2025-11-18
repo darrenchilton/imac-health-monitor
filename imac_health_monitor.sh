@@ -333,43 +333,58 @@ if ! echo "$TM_STATUS" | grep -qi "Latest:"; then
 fi
 
 ###############################################################################
-# Health Score rules
-#
-# Healthy if ALL of these are true:
-#   - SMART is Verified or Not Available (external/USB cases)
-#   - No kernel panics in last 24h
-#   - Disk usage < 90%
-#   - CPU temp < 85°C (if available)
-#   - No critical log entries and not an excessive number of errors
-#   - Time Machine appears configured & working
+# Health Score rules + Reasons
 ###############################################################################
 
 HEALTH_SCORE="Healthy"
+REASONS=""
 
 # 1) SMART disk status (treat "Not Available" as neutral)
 if [ "$SMART_STATUS" != "Verified" ] && [ "$SMART_STATUS" != "Not Available" ]; then
     HEALTH_SCORE="Attention Needed"
+    REASONS+="SMART status is '$SMART_STATUS'. "
+fi
 
 # 2) Kernel panics in last 24h
-elif [ "$KERNEL_PANIC_COUNT" -gt 0 ]; then
+if [ "$KERNEL_PANIC_COUNT" -gt 0 ]; then
     HEALTH_SCORE="Attention Needed"
+    REASONS+="Kernel panics in last 24 hours: $KERNEL_PANIC_COUNT. "
+fi
 
 # 3) Disk too full
-elif [ "$PERCENT_USED_NUM" -ge 90 ] 2>/dev/null; then
+if [ "$PERCENT_USED_NUM" -ge 90 ] 2>/dev/null; then
     HEALTH_SCORE="Attention Needed"
+    REASONS+="Disk usage is ${PERCENT_USED_NUM}% (>= 90%). "
+fi
 
 # 4) CPU running too hot (basic threshold)
-elif [ "$CPU_TEMP_INT" -ge 85 ] && [ "$CPU_TEMP_INT" -le 120 ]; then
+if [ "$CPU_TEMP_INT" -ge 85 ] && [ "$CPU_TEMP_INT" -le 120 ]; then
     HEALTH_SCORE="Attention Needed"
+    REASONS+="CPU temperature is ${CPU_TEMP_INT}°C (>= 85°C). "
+fi
 
 # 5) Too many errors / any critical faults in last hour
-elif [ "$CRITICAL_COUNT_NUM" -gt 0 ] || [ "$ERROR_COUNT_NUM" -gt 100 ]; then
+if [ "$CRITICAL_COUNT_NUM" -gt 0 ]; then
     HEALTH_SCORE="Attention Needed"
+    REASONS+="System log shows ${CRITICAL_COUNT_NUM} critical message(s) in last hour. "
+fi
+
+if [ "$ERROR_COUNT_NUM" -gt 100 ]; then
+    HEALTH_SCORE="Attention Needed"
+    REASONS+="System log shows ${ERROR_COUNT_NUM} error message(s) in last hour (> 100). "
+fi
 
 # 6) Time Machine not configured or clearly unhappy
-elif [ "$TM_NEEDS_ATTENTION" = true ]; then
+if [ "$TM_NEEDS_ATTENTION" = true ]; then
     HEALTH_SCORE="Attention Needed"
+    REASONS+="Time Machine not configured or latest backup not detected. "
 fi
+
+# If still healthy and no specific reasons, set a friendly default
+if [ "$HEALTH_SCORE" = "Healthy" ] && [ -z "$REASONS" ]; then
+    REASONS="All checks passed within defined thresholds."
+fi
+
 
 
 # Prepare JSON payload for Airtable
@@ -387,11 +402,13 @@ JSON_PAYLOAD=$(cat <<EOF
     "Memory Pressure": "$MEMORY",
     "CPU Temperature": "$CPU_TEMP",
     "Time Machine": "$TM_STATUS",
-    "Health Score": "$HEALTH_SCORE"
+    "Health Score": "$HEALTH_SCORE",
+    "Reasons": "$REASONS"
   }
 }
 EOF
 )
+
 
 # Debug: Log the JSON payload
 echo "DEBUG: JSON Payload:" >> "$LOG_FILE"
