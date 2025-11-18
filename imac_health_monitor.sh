@@ -1,11 +1,18 @@
 #!/bin/bash
 
 ################################################################################
-# iMac Health Monitor
+# iMac Health Monitor - Burst-Aware Edition
 # Collects system health metrics and sends to Airtable
 # Created: November 17, 2025
-# Updated: Kernel panic window = last 24 hours, improved Health Score logic
-# Note: This version includes more robust local checks and error handling.
+# Updated: November 18, 2025 - Added burst detection and intelligent thresholds
+# Version: 2.0 - Burst-Aware
+#
+# Changes from v1.0:
+# - Fixed log_message to not pollute function outputs
+# - Added check_error_burst() for recent vs. historical error detection
+# - Updated check_system_errors() to include burst metrics
+# - Raised error thresholds to realistic post-migration levels
+# - Added burst-aware logic to distinguish transient vs. sustained problems
 ################################################################################
 
 # Determine script location
@@ -36,12 +43,12 @@ LOG_FILE="$HOME/Library/Logs/imac_health_monitor.log"
 # Ensure log directory exists
 mkdir -p "$(dirname "$LOG_FILE")"
 
-# Function to log messages
+# Function to log messages (FIXED: no longer pollutes function outputs)
 log_message() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
-log_message "=== Starting iMac Health Check ==="
+log_message "=== Starting iMac Health Check (Burst-Aware v2.0) ==="
 
 ###############################################################################
 # Helper utilities for robustness
@@ -157,37 +164,52 @@ check_kernel_panics() {
 }
 
 ###############################################################################
-# System log errors (last 1 hour)
+# Burst detection - check if errors are recent or historical
+# NEW in v2.0: Distinguishes between active problems and cleared bursts
+###############################################################################
+check_error_burst() {
+    if ! have_cmd log; then
+        echo "0|0"
+        return 0
+    fi
+
+    # Get errors from last 5 minutes (recent)
+    local RECENT_ERRORS
+    RECENT_ERRORS=$(safe_timeout 5 log show --predicate 'messageType == error' --last 5m 2>/dev/null | wc -l | xargs)
+    [ -z "$RECENT_ERRORS" ] && RECENT_ERRORS=0
+
+    # Get errors from last hour (total)
+    local TOTAL_ERRORS
+    TOTAL_ERRORS=$(safe_timeout 10 log show --predicate 'messageType == error' --last 1h 2>/dev/null | wc -l | xargs)
+    [ -z "$TOTAL_ERRORS" ] && TOTAL_ERRORS=0
+
+    echo "${RECENT_ERRORS}|${TOTAL_ERRORS}"
+}
+
+###############################################################################
+# System log errors (last 1 hour) - UPDATED for burst awareness
 ###############################################################################
 check_system_errors() {
     log_message "Checking system logs for errors..."
 
     if ! have_cmd log; then
-        echo "System log tool not available"
+        echo "System log tool not available|0|0|0"
         return 0
     fi
 
-    local ERROR_COUNT CRITICAL_COUNT rc_err rc_crit
+    # Get burst info
+    local BURST_INFO RECENT_ERRORS TOTAL_ERRORS
+    BURST_INFO=$(check_error_burst)
+    RECENT_ERRORS=${BURST_INFO%%|*}
+    TOTAL_ERRORS=${BURST_INFO#*|}
 
-    # Errors
-    ERROR_COUNT=$(safe_timeout 10 log show --predicate 'messageType == error' --last 1h 2>/dev/null | wc -l)
-    rc_err=$?
-    # Critical/fault
-    CRITICAL_COUNT=$(safe_timeout 10 log show --predicate 'messageType == fault' --last 1h 2>/dev/null | wc -l)
-    rc_crit=$?
-
-    # If both timed out or failed, say so
-    if [ $rc_err -ne 0 ] && [ $rc_crit -ne 0 ]; then
-        log_message "WARN: log show commands timed out or failed"
-        echo "Log check unavailable (error or timeout)"
-        return 0
-    fi
-
-    # Normalize empty values
-    [ -z "$ERROR_COUNT" ] && ERROR_COUNT=0
+    # Get critical count
+    local CRITICAL_COUNT
+    CRITICAL_COUNT=$(safe_timeout 10 log show --predicate 'messageType == fault' --last 1h 2>/dev/null | wc -l | xargs)
     [ -z "$CRITICAL_COUNT" ] && CRITICAL_COUNT=0
 
-    echo "Errors: $ERROR_COUNT, Critical: $CRITICAL_COUNT (last 1h)"
+    # Return format: "display_message|total_errors|critical_count|recent_errors"
+    echo "Errors: $TOTAL_ERRORS (recent: $RECENT_ERRORS), Critical: $CRITICAL_COUNT (last 1h)|$TOTAL_ERRORS|$CRITICAL_COUNT|$RECENT_ERRORS"
 }
 
 ###############################################################################
@@ -404,7 +426,22 @@ safe_get KERNEL_PANIC_RAW check_kernel_panics
 KERNEL_PANIC_COUNT=${KERNEL_PANIC_RAW%%|*}
 KERNEL_PANICS=${KERNEL_PANIC_RAW#*|}
 
-safe_get SYSTEM_ERRORS  check_system_errors
+# System errors with burst detection - UPDATED in v2.0
+safe_get SYSTEM_ERRORS_RAW  check_system_errors
+
+# Parse the multi-field output
+SYSTEM_ERRORS=${SYSTEM_ERRORS_RAW%%|*}  # Display message
+SYSTEM_ERRORS_FIELDS=${SYSTEM_ERRORS_RAW#*|}
+
+ERROR_COUNT_NUM=$(echo "$SYSTEM_ERRORS_FIELDS" | cut -d'|' -f1)
+CRITICAL_COUNT_NUM=$(echo "$SYSTEM_ERRORS_FIELDS" | cut -d'|' -f2)
+RECENT_ERROR_COUNT=$(echo "$SYSTEM_ERRORS_FIELDS" | cut -d'|' -f3)
+
+# Ensure all are numeric
+[[ ! "$ERROR_COUNT_NUM" =~ ^[0-9]+$ ]] && ERROR_COUNT_NUM=0
+[[ ! "$CRITICAL_COUNT_NUM" =~ ^[0-9]+$ ]] && CRITICAL_COUNT_NUM=0
+[[ ! "$RECENT_ERROR_COUNT" =~ ^[0-9]+$ ]] && RECENT_ERROR_COUNT=0
+
 safe_get DRIVE_SPACE    get_drive_space
 safe_get UPTIME         get_uptime
 safe_get MEMORY         get_memory_pressure
@@ -435,17 +472,6 @@ if [ -n "$CPU_TEMP_NUM" ]; then
     CPU_TEMP_INT=${CPU_TEMP_NUM%.*}
 fi
 
-# System errors
-ERROR_COUNT_NUM=$(echo "$SYSTEM_ERRORS" | sed -n 's/Errors: \([0-9]\+\).*/\1/p')
-if ! [[ "$ERROR_COUNT_NUM" =~ ^[0-9]+$ ]]; then
-    ERROR_COUNT_NUM=0
-fi
-
-CRITICAL_COUNT_NUM=$(echo "$SYSTEM_ERRORS" | sed -n 's/.*Critical: \([0-9]\+\).*/\1/p')
-if ! [[ "$CRITICAL_COUNT_NUM" =~ ^[0-9]+$ ]]; then
-    CRITICAL_COUNT_NUM=0
-fi
-
 ###############################################################################
 # Time Machine - compute days since last backup (if present)
 ###############################################################################
@@ -467,7 +493,7 @@ else
 fi
 
 ###############################################################################
-# Severity + Reasons + Health Score
+# Severity + Reasons + Health Score - UPDATED with burst-aware logic in v2.0
 ###############################################################################
 
 SEVERITY="Info"
@@ -513,18 +539,31 @@ elif [ "$CPU_TEMP_INT" -ge 80 ] 2>/dev/null && [ "$CPU_TEMP_INT" -lt 85 ] 2>/dev
     REASONS+="CPU temp ${CPU_TEMP_INT}°C (>= 80°C). "
 fi
 
-### System logs
-if [ "$CRITICAL_COUNT_NUM" -gt 0 ] 2>/dev/null; then
+### System logs - BURST-AWARE LOGIC (NEW in v2.0)
+
+# Critical messages (still important, but with higher threshold)
+if [ "$CRITICAL_COUNT_NUM" -gt 50 ] 2>/dev/null; then
     bump_to_critical
-    REASONS+="Critical log messages: ${CRITICAL_COUNT_NUM}. "
+    REASONS+="Critical log messages very high: ${CRITICAL_COUNT_NUM}. "
+elif [ "$CRITICAL_COUNT_NUM" -gt 10 ] 2>/dev/null; then
+    bump_to_warning
+    REASONS+="Critical log messages elevated: ${CRITICAL_COUNT_NUM}. "
 fi
 
-if [ "$ERROR_COUNT_NUM" -gt 2000 ] 2>/dev/null; then
+# Error count - burst-aware evaluation
+# Check if errors are sustained (recent activity) or historical (burst that ended)
+if [ "$ERROR_COUNT_NUM" -gt 20000 ] 2>/dev/null && [ "$RECENT_ERROR_COUNT" -gt 1000 ] 2>/dev/null; then
+    # Very high error count AND still actively erroring - true problem
     bump_to_critical
-    REASONS+="Error count very high (${ERROR_COUNT_NUM}). "
-elif [ "$ERROR_COUNT_NUM" -gt 500 ] 2>/dev/null; then
+    REASONS+="Sustained high error rate detected (${ERROR_COUNT_NUM} total, ${RECENT_ERROR_COUNT} in last 5min). "
+elif [ "$ERROR_COUNT_NUM" -gt 15000 ] 2>/dev/null && [ "$RECENT_ERROR_COUNT" -gt 500 ] 2>/dev/null; then
+    # High error count with moderate recent activity
     bump_to_warning
-    REASONS+="Error count elevated (${ERROR_COUNT_NUM}). "
+    REASONS+="Elevated error rate (${ERROR_COUNT_NUM} total, ${RECENT_ERROR_COUNT} in last 5min). "
+elif [ "$ERROR_COUNT_NUM" -gt 15000 ] 2>/dev/null && [ "$RECENT_ERROR_COUNT" -lt 100 ] 2>/dev/null; then
+    # High historical errors but system quiet now - was a burst, now stable
+    # Don't escalate severity, just note it
+    REASONS+="Error burst detected earlier (${ERROR_COUNT_NUM} total), but system now stable (${RECENT_ERROR_COUNT} recent). "
 fi
 
 ### Time Machine thresholds
@@ -642,5 +681,5 @@ else
     log_message "Response: $RESPONSE"
 fi
 
-log_message "=== Health check completed ==="
+log_message "=== Health check completed (Burst-Aware v2.0) ==="
 echo ""
