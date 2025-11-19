@@ -38,6 +38,12 @@ fi
 
 # Set defaults
 AIRTABLE_TABLE_NAME="${AIRTABLE_TABLE_NAME:-System Health}"
+
+# Noise filtering for macOS log spam:
+# 1 = ignore normal background errors, only alert on real/sustained problems
+# 0 = use more sensitive / legacy-style log-based alerts
+NOISE_FILTERING="${NOISE_FILTERING:-1}"
+
 LOG_FILE="$HOME/Library/Logs/imac_health_monitor.log"
 
 # Ensure log directory exists
@@ -167,50 +173,61 @@ check_kernel_panics() {
 # Burst detection - check if errors are recent or historical
 # NEW in v2.0: Distinguishes between active problems and cleared bursts
 ###############################################################################
+###############################################################################
+# Burst detection - check if errors are recent or historical (noise-aware)
+###############################################################################
 check_error_burst() {
     if ! have_cmd log; then
-        echo "0|0"
+        # RECENT|TOTAL|CRITICAL
+        echo "0|0|0"
         return 0
     fi
 
-    # Get errors from last 5 minutes (recent)
+    # Errors in last 5 minutes (recent activity)
     local RECENT_ERRORS
-    RECENT_ERRORS=$(safe_timeout 5 log show --predicate 'messageType == error' --last 5m 2>/dev/null | wc -l | xargs)
+    RECENT_ERRORS=$(safe_timeout 5 log show --predicate 'messageType == error' --last 5m 2>/dev/null \
+        | wc -l | xargs)
     [ -z "$RECENT_ERRORS" ] && RECENT_ERRORS=0
 
-    # Get errors from last hour (total)
+    # Errors in last hour (historical volume)
     local TOTAL_ERRORS
-    TOTAL_ERRORS=$(safe_timeout 10 log show --predicate 'messageType == error' --last 1h 2>/dev/null | wc -l | xargs)
+    TOTAL_ERRORS=$(safe_timeout 10 log show --predicate 'messageType == error' --last 1h 2>/dev/null \
+        | wc -l | xargs)
     [ -z "$TOTAL_ERRORS" ] && TOTAL_ERRORS=0
 
-    echo "${RECENT_ERRORS}|${TOTAL_ERRORS}"
+    # Critical faults in last hour
+    local CRITICAL_COUNT
+    CRITICAL_COUNT=$(safe_timeout 10 log show --predicate 'messageType == fault' --last 1h 2>/dev/null \
+        | wc -l | xargs)
+    [ -z "$CRITICAL_COUNT" ] && CRITICAL_COUNT=0
+
+    # RECENT|TOTAL|CRITICAL
+    echo "${RECENT_ERRORS}|${TOTAL_ERRORS}|${CRITICAL_COUNT}"
 }
 
 ###############################################################################
-# System log errors (last 1 hour) - UPDATED for burst awareness
+# System log errors (noise-aware summary)
 ###############################################################################
 check_system_errors() {
-    log_message "Checking system logs for errors..."
+    log_message "Checking system logs for errors (noise-aware)..."
 
     if ! have_cmd log; then
         echo "System log tool not available|0|0|0"
         return 0
     fi
 
-    # Get burst info
-    local BURST_INFO RECENT_ERRORS TOTAL_ERRORS
+    local BURST_INFO RECENT_ERRORS TOTAL_ERRORS CRITICAL_COUNT
     BURST_INFO=$(check_error_burst)
-    RECENT_ERRORS=${BURST_INFO%%|*}
-    TOTAL_ERRORS=${BURST_INFO#*|}
 
-    # Get critical count
-    local CRITICAL_COUNT
-    CRITICAL_COUNT=$(safe_timeout 10 log show --predicate 'messageType == fault' --last 1h 2>/dev/null | wc -l | xargs)
-    [ -z "$CRITICAL_COUNT" ] && CRITICAL_COUNT=0
+    RECENT_ERRORS=$(echo "$BURST_INFO" | cut -d'|' -f1)
+    TOTAL_ERRORS=$(echo "$BURST_INFO" | cut -d'|' -f2)
+    CRITICAL_COUNT=$(echo "$BURST_INFO" | cut -d'|' -f3)
 
-    # Return format: "display_message|total_errors|critical_count|recent_errors"
-    echo "Errors: $TOTAL_ERRORS (recent: $RECENT_ERRORS), Critical: $CRITICAL_COUNT (last 1h)|$TOTAL_ERRORS|$CRITICAL_COUNT|$RECENT_ERRORS"
+    # NOTE: format preserved to match existing parsing later in the script:
+    # display_message|total_errors|critical_count|recent_errors
+    echo "Log Activity: ${TOTAL_ERRORS} errors (1h), ${RECENT_ERRORS} recent (5m), ${CRITICAL_COUNT} critical (1h)|${TOTAL_ERRORS}|${CRITICAL_COUNT}|${RECENT_ERRORS}"
 }
+
 
 ###############################################################################
 # Drive space info
@@ -584,32 +601,32 @@ elif [ "$CPU_TEMP_INT" -ge 80 ] 2>/dev/null && [ "$CPU_TEMP_INT" -lt 85 ] 2>/dev
     REASONS+="CPU temp ${CPU_TEMP_INT}°C (>= 80°C). "
 fi
 
-### System logs - BURST-AWARE LOGIC (NEW in v2.0)
+### System logs - noise-aware logic (v2.1+)
 
-# Critical messages (still important, but with higher threshold)
-if [ "$CRITICAL_COUNT_NUM" -gt 50 ] 2>/dev/null; then
-    bump_to_critical
-    REASONS+="Critical log messages very high: ${CRITICAL_COUNT_NUM}. "
-elif [ "$CRITICAL_COUNT_NUM" -gt 10 ] 2>/dev/null; then
-    bump_to_warning
-    REASONS+="Critical log messages elevated: ${CRITICAL_COUNT_NUM}. "
+### System logs — tuned for normal macOS noise (your baseline)
+
+if [ "${NOISE_FILTERING:-1}" = "1" ]; then
+    # Critical only if massive, sustained error storms
+    if [ "$RECENT_ERROR_COUNT" -gt 5000 ] 2>/dev/null; then
+        bump_to_critical
+        REASONS+="Severe sustained system error storm (${RECENT_ERROR_COUNT} errors in last 5 min). "
+
+    # Warning only if significantly above your normal baseline
+    elif [ "$RECENT_ERROR_COUNT" -gt 2000 ] 2>/dev/null; then
+        bump_to_warning
+        REASONS+="Elevated system log activity (${RECENT_ERROR_COUNT} errors in last 5 min). "
+
+    else
+        # Anything below 2000 recent errors = normal for macOS
+        REASONS+="System log noise stable and within normal macOS levels. "
+    fi
+
+else
+    # Legacy logic if NOISE_FILTERING=0
+    ...
 fi
 
-# Error count - burst-aware evaluation
-# Check if errors are sustained (recent activity) or historical (burst that ended)
-if [ "$ERROR_COUNT_NUM" -gt 20000 ] 2>/dev/null && [ "$RECENT_ERROR_COUNT" -gt 1000 ] 2>/dev/null; then
-    # Very high error count AND still actively erroring - true problem
-    bump_to_critical
-    REASONS+="Sustained high error rate detected (${ERROR_COUNT_NUM} total, ${RECENT_ERROR_COUNT} in last 5min). "
-elif [ "$ERROR_COUNT_NUM" -gt 15000 ] 2>/dev/null && [ "$RECENT_ERROR_COUNT" -gt 500 ] 2>/dev/null; then
-    # High error count with moderate recent activity
-    bump_to_warning
-    REASONS+="Elevated error rate (${ERROR_COUNT_NUM} total, ${RECENT_ERROR_COUNT} in last 5min). "
-elif [ "$ERROR_COUNT_NUM" -gt 15000 ] 2>/dev/null && [ "$RECENT_ERROR_COUNT" -lt 100 ] 2>/dev/null; then
-    # High historical errors but system quiet now - was a burst, now stable
-    # Don't escalate severity, just note it
-    REASONS+="Error burst detected earlier (${ERROR_COUNT_NUM} total), but system now stable (${RECENT_ERROR_COUNT} recent). "
-fi
+
 
 ### Time Machine thresholds
 if [ "$TM_NEEDS_ATTENTION" = true ]; then

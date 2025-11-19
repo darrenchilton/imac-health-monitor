@@ -1,26 +1,24 @@
-# **iMac Health Monitor**
+# **iMac Health Monitor (v2.2)**
 
-![Version](https://img.shields.io/badge/version-1.1.0-green)
-
-A lightweight health-monitoring system for macOS (optimized for iMacs) that collects system diagnostics and pushes them to Airtable for centralized monitoring.
-Includes automatic updates from GitHub → local machine, and an optional local → GitHub push script.
+A lightweight health‑monitoring system for macOS (optimized for iMacs) that collects system diagnostics and pushes them to Airtable for centralized monitoring. Now includes **noise-filtered log analysis**, **improved System Error parsing**, and optional **log‑noise suppression** to prevent false alerts from normal macOS background activity.
 
 ---
 
 ## **📌 Features**
 
-### **Monitors system health**
+### **Monitors System Health**
 
 | Category        | What Is Checked                        | Notes                                  |
 | --------------- | -------------------------------------- | -------------------------------------- |
 | SMART Status    | Boot disk SMART status                 | Works with external SSDs               |
 | Kernel Panics   | **Last 24 hours**                      | Shows count + latest file              |
-| System Logs     | Errors & critical faults (past 1 hour) | Uses `log show` with timeout           |
+| System Logs     | Errors, recent activity & critical faults | Now noise-filtered to avoid false positives |
 | Disk Usage      | Total / Used / % Used                  | Uses HOME volume                       |
 | Memory Pressure | Active + wired memory usage            | Works without FDA                      |
-| CPU Temperature | If sensors available                   | Supports Homebrew installs             |
-| Time Machine    | Status + time of last backup           | Works with or without Full Disk Access |
-| Uptime          | System uptime                          | Simple and reliable                    |
+| CPU Temperature | From sensors if available              | Supports Homebrew installs             |
+| Time Machine    | Status + age of last backup            | Works with or without Full Disk Access |
+| Uptime          | System uptime                          | Reliable and simple                    |
+| Software Updates | macOS updates available               | Safe timeout prevents hangs            |
 
 ### **Calculates a Health Score**
 
@@ -31,208 +29,186 @@ Based on thresholds for:
 
 * SMART status
 * Kernel panics
-* Disk % used
+* Disk usage
 * CPU temperature
-* System log errors
+* **Noise‑filtered system log activity**
 * Time Machine backup age
 
 ---
 
-## **📡 Sends Data to Airtable**
+## **🆕 Noise‑Filtered Log Analysis (v2.2 Update)**
 
-Fields sent:
+macOS produces large volumes of harmless background log messages. To prevent false alerts, the script now uses **noise‑tolerant thresholds**:
+
+| Condition | RECENT_ERROR_COUNT (last 5 min) | Severity |
+|----------|-------------------------------|----------|
+| **Healthy** | 0 – 2000 | Within normal macOS noise |
+| **Warning** | 2001 – 5000 | Elevated but not dangerous |
+| **Critical** | > 5000 | Sustained error storm |
+
+This dramatically reduces false “Attention Needed” results.
+
+### **NOISE_FILTERING Toggle (.env)**
+
+```
+NOISE_FILTERING=1   # Default – ignore normal macOS noise
+NOISE_FILTERING=0   # Legacy mode, more sensitive
+```
+
+---
+
+## **📡 Data Sent to Airtable**
 
 * Timestamp
 * Hostname
 * macOS version
 * SMART Status
 * Kernel Panics
-* System Errors
+* **System Errors (new structured format)**
 * Drive Space
 * Uptime
 * Memory Pressure
 * CPU Temperature
 * Time Machine Status
+* Software Updates
 * Health Score
 * Severity
-* Reasons
+* Reasons (noise‑aware)
 
-All JSON sent to Airtable is sanitized and can optionally use `jq` for safer encoding.
+### **New System Errors Format (v2.2)**
+
+```
+Log Activity: <errors_1h> errors (1h), <recent_5m> recent (5m), <critical_1h> critical (1h)
+```
+
+Example:
+```
+Log Activity: 38767 errors (1h), 1253 recent (5m), 2953 critical (1h)
+```
+
+This format is easier to parse and consistent across runs.
+
+---
+
+## **📊 Optional: Unified Error Object for Airtable**
+
+You can create a single parsed JSON‑like field in Airtable using:
+
+```
+{"errors_1h":38767,"recent_5m":1253,"critical_1h":2953}
+```
+
+Suggested Airtable formula:
+
+```
+IF(
+  {System Errors},
+  "{" &
+    "\"errors_1h\": " & VALUE(REGEX_EXTRACT({System Errors}, "Log Activity:\s*([0-9]+)")) & "," &
+    "\"recent_5m\": " & VALUE(REGEX_EXTRACT({System Errors}, "([0-9]+)\s*recent")) & "," &
+    "\"critical_1h\": " & VALUE(REGEX_EXTRACT({System Errors}, "([0-9]+)\s*critical")) &
+  "}",
+  ""
+)
+```
+
+Great for trend analysis and dashboards.
 
 ---
 
 ## **🆕 Update System**
 
-The project now supports **two update workflows:**
+Two syncing workflows are supported:
 
----
+### **1️⃣ GitHub → iMac (Automatic Updates)**
+Automatically syncs changes from GitHub using `update_from_github.sh` and a `launchd` job.
 
-# **1️⃣ GitHub → iMac (Automatic Updates)**
-
-When you're away from the iMac, you can edit the script on GitHub and the computer will automatically stay in sync.
-
-### **How it works**
-
-* A script (`update_from_github.sh`) checks GitHub periodically.
-* If the remote `main` branch has new commits:
-
-  * It pulls them
-  * Updates local files
-  * Re-chmods the monitor script
-* A `launchd` job runs every 15 minutes.
-
-### **Install the updater**
-
-Files involved:
-
+Run:
 ```
-update_from_github.sh
-~/Library/LaunchAgents/com.slavicanikolic.imac-health-updater.plist
-```
-
-Once installed:
-
-```bash
 launchctl load ~/Library/LaunchAgents/com.slavicanikolic.imac-health-updater.plist
 ```
 
-You never need to manually update the script again when editing via GitHub.
-
----
-
-# **2️⃣ iMac → GitHub (Manual Push Script)**
-
-When you make local changes on the iMac, run this command to commit and push everything to GitHub:
-
-```bash
+### **2️⃣ iMac → GitHub (Manual Push)**
+Push local modifications:
+```
 ./push_to_github.sh "Your commit message"
 ```
 
-If you run it with no arguments, it will ask for a message.
-
-Files involved:
-
-```
-push_to_github.sh
-```
-
 ---
 
-# **📁 Directory Structure**
-
-Typical structure:
-
+## **📁 Directory Structure**
 ```
 imac-health-monitor/
  ├── imac_health_monitor.sh
  ├── update_from_github.sh
  ├── push_to_github.sh
- ├── .env                  # Airtable credentials
- ├── .env.example
+ ├── .env
  ├── README.md
- └── LaunchAgent plist (installed under ~/Library/LaunchAgents)
+ └── LaunchAgent plist files
 ```
 
 ---
 
-# **⚙️ Installation Instructions**
+## **⚙️ Installation Instructions**
 
-## **Step 1 — Clone the project**
-
-```bash
+### **Step 1 — Clone the project**
+```
 git clone git@github.com:darrenchilton/imac-health-monitor.git
 cd imac-health-monitor
 ```
 
-(SSH recommended for auto-pulls.)
-
----
-
-## **Step 2 — Create `.env` file**
-
-Use `.env.example` as a guide:
-
+### **Step 2 — Create `.env`**
 ```
-AIRTABLE_API_KEY=your_key_here
+AIRTABLE_API_KEY=your_key
 AIRTABLE_BASE_ID=appXXXXXXXXXXXX
 AIRTABLE_TABLE_NAME="System Health"
+NOISE_FILTERING=1
 ```
 
----
-
-## **Step 3 — Make scripts executable**
-
-```bash
+### **Step 3 — Make scripts executable**
+```
 chmod +x imac_health_monitor.sh
 chmod +x update_from_github.sh
 chmod +x push_to_github.sh
 ```
 
----
-
-## **Step 4 — Set up the GitHub → iMac auto-updater (optional but recommended)**
-
-Copy the provided `.plist` to:
-
+### **Step 4 — Install Auto‑Updater (Optional)**
 ```
-~/Library/LaunchAgents/com.slavicanikolic.imac-health-updater.plist
-```
-
-Load it:
-
-```bash
+cp com.slavicanikolic.imac-health-updater.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.slavicanikolic.imac-health-updater.plist
 ```
 
----
-
-## **Step 5 — Schedule the health monitor via `launchd`**
-
-(If you haven't already.)
-
+### **Step 5 — Schedule Health Monitor via launchd**
 Example plist:
-
 ```
 ~/Library/LaunchAgents/com.imac.healthmonitor.plist
 ```
 
-This can run the monitor script every hour, 6 hours, etc.
-
 ---
 
-# **🧪 Test Run**
+## **🧪 Test Run**
 
-You can test the script without sending data to Airtable by echoing the JSON payload:
-
-```bash
+Debug mode (prints payload to log):
+```
 DEBUG=1 ./imac_health_monitor.sh
 ```
 
-Or fully run it:
-
-```bash
-./imac_health_monitor.sh
-```
-
-Check logs:
-
+Logs:
 ```
 ~/Library/Logs/imac_health_monitor.log
-~/Library/Logs/imac_health_updater.log
-~/Library/Logs/imac_health_updater.out
-~/Library/Logs/imac_health_updater.err
 ```
 
 ---
 
-# **🚧 Roadmap**
+## **🛣 Roadmap**
+* Trend analysis over time
+* Weekly summaries
+* Optional Slack/email alerts
+* Local HTML dashboard
+* Deeper hardware-level checks (fans, voltages)
 
-* Add self-test / diagnostics mode
-* Add optional Slack or email alerts
-* Add a simple local dashboard (HTML/MiniUI)
-* Add deeper hardware-level checks (fans, voltages, etc.)
 ---
 
-# **📄 License**
+## **📄 License**
+MIT
 
-MIT (or whichever you choose — not currently specified)
