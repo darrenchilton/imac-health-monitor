@@ -1,4 +1,5 @@
 #!/bin/bash
+SECONDS=0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -37,7 +38,7 @@ boot_device=$(diskutil info / 2>/dev/null | awk '/Device Node:/ {print $3}' | se
 smart_status=$(safe_timeout 5 diskutil info "$boot_device" 2>/dev/null | awk -F': *' '/SMART Status/ {print $2}' | xargs)
 [[ -z "$smart_status" ]] && smart_status="Unknown"
 
-kernel_panics=$(safe_timeout 8 log show --predicate 'eventMessage contains "panic"' --last 24h 2>/dev/null | wc -l | tr -d ' ')
+kernel_panics=$(safe_timeout 8 log show --predicate 'eventMessage CONTAINS "panic(cpu"' --last 24h 2>/dev/null | wc -l | tr -d ' ')
 
 check_tm_age() {
     local path=$(safe_timeout 5 tmutil latestbackup 2>/dev/null)
@@ -138,13 +139,55 @@ else
     health_score_label="Healthy"
     reasons="System operating normally"
 fi
+###############################################################################
+# GPU / WindowServer Freeze Detector (last 2 minutes)
+###############################################################################
+gpu_freeze_patterns=(
+    "GPU Reset"
+    "GPU Hang"
+    "AMDRadeon"
+    "AGC::"
+    "WindowServer.*stalled"
+    "WindowServer.*overload"
+    "IOSurface"
+    "Metal.*timeout"
+    "timed out waiting for"
+    "GPU Debug Info"
+)
+
+gpu_freeze_detected="No"
+gpu_recent_log=$(safe_timeout 8 log show --last 2m --predicate 'eventMessage CONTAINS[c] "gpu" OR eventMessage CONTAINS[c] "WindowServer" OR eventMessage CONTAINS[c] "display" OR eventMessage CONTAINS[c] "metal"' 2>/dev/null)
+gpu_freeze_events=""
+
+for pattern in "${gpu_freeze_patterns[@]}"; do
+    match=$(echo "$gpu_recent_log" | grep -E "$pattern" | head -5)
+    if [ -n "$match" ]; then
+        gpu_freeze_detected="Yes"
+        gpu_freeze_events+="${pattern}: $(echo "$match" | wc -l | tr -d ' ') events; "
+    fi
+done
+
+# Clean trailing separator
+gpu_freeze_events=$(echo "$gpu_freeze_events" | sed 's/; $//')
+# Ensure GPU Freeze Events is not empty
+if [ -z "$gpu_freeze_events" ]; then
+    gpu_freeze_events="None"
+fi
+
+# Ensure field is not empty (Airtable rejects "")
+if [ -z "$gpu_freeze_detected" ]; then
+    gpu_freeze_detected="No"
+fi
 
 # FIXED: Adjust for hardware issues
 [[ "$smart_status" != "Verified" && "$smart_status" != "Unknown" ]] && severity="Critical" && health_score_label="Attention Needed" && reasons="SMART status: ${smart_status}"
 [[ "$kernel_panics" -gt 0 ]] && severity="Critical" && health_score_label="Attention Needed" && reasons="Kernel panic detected"
 [[ "$tm_age_days" -gt 7 ]] && severity="Warning" && health_score_label="Attention Needed" && reasons="${reasons}; Time Machine backup overdue (${tm_age_days} days)"
+run_duration_seconds=$SECONDS
 
-# FIXED: Build JSON payload with correct field types
+###############################################################################
+# Build primary JSON payload
+###############################################################################
 JSON_PAYLOAD=$(jq -n \
   --arg ts "$timestamp" \
   --arg host "$hostname" \
@@ -163,6 +206,9 @@ JSON_PAYLOAD=$(jq -n \
   --arg reasons "$reasons" \
   --arg te "$top_errors" \
   --arg tc "$top_crashes" \
+  --arg gpu_freeze "$gpu_freeze_detected" \
+  --arg gpu_events "$gpu_freeze_events" \
+  --argjson run_duration "$run_duration_seconds" \
   --argjson ek "$error_kernel_1h" \
   --argjson ew "$error_windowserver_1h" \
   --argjson es "$error_spotlight_1h" \
@@ -176,6 +222,7 @@ JSON_PAYLOAD=$(jq -n \
   --argjson tt "$thermal_throttles_1h" \
   --argjson fm "$fan_max_events_1h" \
   '{fields: {
+      "Run Duration (seconds)": $run_duration,
       "Timestamp": $ts,
       "Hostname": $host,
       "macOS Version": $ver,
@@ -204,16 +251,29 @@ JSON_PAYLOAD=$(jq -n \
       "error_power_1h": $ep,
       "crash_count": $cc,
       "thermal_throttles_1h": $tt,
+      "GPU Freeze Detected": $gpu_freeze,
+      "GPU Freeze Events": $gpu_events,
       "fan_max_events_1h": $fm
   }}')
 
+###############################################################################
+# Build FINAL_PAYLOAD by adding the Raw JSON
+###############################################################################
+FINAL_PAYLOAD=$(jq -n \
+  --argjson main "$JSON_PAYLOAD" \
+  --arg raw "$JSON_PAYLOAD" \
+  '{fields: ($main.fields + {"Raw JSON": $raw})}')
+
+###############################################################################
+# Send to Airtable
+###############################################################################
 TABLE_ENCODED=$(echo "$AIRTABLE_TABLE_NAME" | sed 's/ /%20/g')
 
 RESPONSE=$(curl -s -X POST \
   "https://api.airtable.com/v0/$AIRTABLE_BASE_ID/$TABLE_ENCODED" \
   -H "Authorization: Bearer $AIRTABLE_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "$JSON_PAYLOAD")
+  -d "$FINAL_PAYLOAD")
 
 if echo "$RESPONSE" | grep -q '"id"'; then
     echo "Airtable Update: SUCCESS"
@@ -222,4 +282,4 @@ else
     echo "$RESPONSE"
 fi
 
-echo "$JSON_PAYLOAD"
+echo "$FINAL_PAYLOAD"

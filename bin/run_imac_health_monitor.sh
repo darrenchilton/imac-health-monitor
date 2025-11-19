@@ -1,11 +1,9 @@
 #!/bin/bash
-set -e
 
-# Go to the repo
-cd /Users/slavicanikolic/Documents/imac-health-monitor
-
-# Get latest version from GitHub
-/usr/bin/git pull --rebase --ff-only
+# Change to the script directory
+cd "$(dirname "$0")/.." || exit 1
 
 # Run the health monitor script
 ./imac_health_monitor.sh
+
+exit 0
