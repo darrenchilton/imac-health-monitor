@@ -14,6 +14,7 @@ set -a
 source "$ENV_PATH"
 set +a
 
+
 AIRTABLE_TABLE_NAME="${AIRTABLE_TABLE_NAME:-System Health}"
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
@@ -25,16 +26,11 @@ safe_timeout() {
     else "$@"; fi
 }
 
-# FIXED: Use ISO 8601 format for timestamp
 timestamp=$(date -u "+%Y-%m-%dT%H:%M:%SZ")
 hostname=$(hostname)
 macos_version=$(sw_vers -productVersion)
 
-# Get the actual boot disk device (e.g., disk2s1 -> disk2)
-boot_device=$(diskutil info / 2>/dev/null | awk '/Device Node:/ {print $3}' | sed 's/s[0-9]*$//')
-[[ -z "$boot_device" ]] && boot_device="disk0"  # Fallback to disk0 if detection fails
-
-smart_status=$(safe_timeout 5 diskutil info "$boot_device" 2>/dev/null | awk -F': *' '/SMART Status/ {print $2}' | xargs)
+smart_status=$(safe_timeout 5 diskutil info disk0 2>/dev/null | awk -F': *' '/SMART Status/ {print $2}' | xargs)
 [[ -z "$smart_status" ]] && smart_status="Unknown"
 
 kernel_panics=$(safe_timeout 8 log show --predicate 'eventMessage contains "panic"' --last 24h 2>/dev/null | wc -l | tr -d ' ')
@@ -82,30 +78,26 @@ top_errors=$(echo "$LOG_1H" \
     | awk '{$1=""; print substr($0,2)}' \
     | paste -sd " | " -)
 
-# Check for crash reports (multiple file types)
-crash_files=$(ls -1t ~/Library/Logs/DiagnosticReports/*.{crash,ips,panic,diag} 2>/dev/null)
-crash_count=$(echo "$crash_files" | grep -v '^$' | wc -l | tr -d ' ')
-top_crashes=$(echo "$crash_files" | head -3 | sed 's/.*\///' | paste -sd "," -)
+crash_count=$(ls -1 ~/Library/Logs/DiagnosticReports/*.crash 2>/dev/null | wc -l | tr -d ' ')
+top_crashes=$(ls -1t ~/Library/Logs/DiagnosticReports/*.crash 2>/dev/null | head -3 | sed 's/.*\///' | paste -sd "," -)
 
-# FIXED: Calculate additional metrics - check the actual boot data volume
-drive_info=$(df -h /System/Volumes/Data 2>/dev/null | awk 'NR==2 {printf "Total: %s, Used: %s (%s), Available: %s", $2, $3, $5, $4}')
-# Fallback to root if Data volume not found
-[[ -z "$drive_info" ]] && drive_info=$(df -h / | awk 'NR==2 {printf "Total: %s, Used: %s (%s), Available: %s", $2, $3, $5, $4}')
+# Calculate additional metrics
+drive_info=$(df -h / | awk 'NR==2 {printf "Total: %s, Used: %s (%s), Available: %s", $2, $3, $5, $4}')
 uptime_val=$(uptime | awk '{print $3,$4}' | sed 's/,$//')
 memory_pressure=$(memory_pressure 2>/dev/null | grep "System-wide memory free percentage:" | awk '{print $5}' || echo "N/A")
 cpu_temp=$(osx-cpu-temp 2>/dev/null || echo "N/A")
 
-# FIXED: Format Kernel Panics text
+# Format Kernel Panics text
 if [[ "$kernel_panics" -eq 0 ]]; then
     kernel_panics_text="No kernel panics in last 24 hours"
 else
     kernel_panics_text="${kernel_panics} kernel panic(s) detected in last 24 hours"
 fi
 
-# FIXED: Format System Errors text with burst detection
+# Format System Errors text with burst detection
 system_errors_text="Log Activity: ${errors_1h} errors (${recent_5m} recent, ${critical_1h} critical)"
 
-# FIXED: Format Time Machine status
+# Format Time Machine status
 tm_status="Configured; Latest: Unable to determine"
 if [[ "$tm_age_days" -ne -1 && "$tm_age_days" -gt 0 ]]; then
     # Calculate the date X days ago
@@ -115,7 +107,7 @@ elif [[ "$tm_age_days" -eq 0 ]]; then
     tm_status="Configured; Latest: $(date '+%Y-%m-%d')"
 fi
 
-# FIXED: Determine severity and health score based on error analysis
+# Determine severity and health score based on error analysis
 # Key insight: Compare recent (5m) vs total (1h) errors to detect active vs resolved issues
 if [[ "$recent_5m" -gt 50 ]]; then
     severity="Critical"
@@ -139,12 +131,11 @@ else
     reasons="System operating normally"
 fi
 
-# FIXED: Adjust for hardware issues
+# Adjust for hardware issues
 [[ "$smart_status" != "Verified" && "$smart_status" != "Unknown" ]] && severity="Critical" && health_score_label="Attention Needed" && reasons="SMART status: ${smart_status}"
 [[ "$kernel_panics" -gt 0 ]] && severity="Critical" && health_score_label="Attention Needed" && reasons="Kernel panic detected"
 [[ "$tm_age_days" -gt 7 ]] && severity="Warning" && health_score_label="Attention Needed" && reasons="${reasons}; Time Machine backup overdue (${tm_age_days} days)"
 
-# FIXED: Build JSON payload with correct field types
 JSON_PAYLOAD=$(jq -n \
   --arg ts "$timestamp" \
   --arg host "$hostname" \
@@ -206,6 +197,7 @@ JSON_PAYLOAD=$(jq -n \
       "thermal_throttles_1h": $tt,
       "fan_max_events_1h": $fm
   }}')
+
 
 TABLE_ENCODED=$(echo "$AIRTABLE_TABLE_NAME" | sed 's/ /%20/g')
 
