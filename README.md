@@ -585,6 +585,7 @@ For issues or questions:
 - Review LaunchAgent logs
 - Test script manually with verbose output
 - Verify Airtable schema matches requirements
+- darrenchilton@gmail.com
 
 ---
 
