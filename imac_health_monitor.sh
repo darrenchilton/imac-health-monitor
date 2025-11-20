@@ -251,6 +251,328 @@ fi
 [[ "$smart_status" != "Verified" && "$smart_status" != "Unknown" ]] && severity="Critical" && health_score_label="Attention Needed" && reasons="SMART status: ${smart_status}"
 [[ "$kernel_panics" -gt 0 ]] && severity="Critical" && health_score_label="Attention Needed" && reasons="Kernel panic detected"
 [[ "$tm_age_days" -gt 7 ]] && severity="Warning" && health_score_label="Attention Needed" && reasons="${reasons}; Time Machine backup overdue (${tm_age_days} days)"
+
+###############################################################################
+# USER AND APPLICATION MONITORING
+###############################################################################
+
+# Get active console users with session info
+get_active_users() {
+    local users_info=""
+    local user_list=$(who | grep "console" | awk '{print $1}' | sort -u)
+    local count=0
+    
+    if [[ -z "$user_list" ]]; then
+        echo "0"
+        echo "No console users"
+        return
+    fi
+    
+    while IFS= read -r user; do
+        [[ -z "$user" ]] && continue
+        ((count++))
+        
+        # Get idle time from 'w' command
+        local idle=$(w -h "$user" 2>/dev/null | grep "console" | awk '{print $4}' | head -1)
+        [[ -z "$idle" ]] && idle="active"
+        
+        users_info+="${user} (console, idle ${idle})"$'\n'
+    done <<< "$user_list"
+    
+    echo "$count"  # Return count for user_count field
+    echo "$users_info" | sed '/^$/d'  # Return formatted text
+}
+
+# Get app version safely
+get_app_version() {
+    local app_path="$1"
+    local version=$(defaults read "${app_path}/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null)
+    [[ -z "$version" ]] && version=$(defaults read "${app_path}/Contents/Info.plist" CFBundleVersion 2>/dev/null)
+    echo "$version"
+}
+
+# Check if app is legacy/problematic
+check_legacy_status() {
+    local app_name="$1"
+    local version="$2"
+    local major_version=$(echo "$version" | cut -d. -f1)
+    
+    case "$app_name" in
+        "VMware Fusion")
+            if [[ "$major_version" -lt 13 ]]; then
+                echo "⚠️ LEGACY"
+            fi
+            ;;
+        "VirtualBox")
+            if [[ "$major_version" -lt 7 ]]; then
+                echo "⚠️ LEGACY"
+            fi
+            ;;
+        "Parallels Desktop")
+            if [[ "$major_version" -lt 17 ]]; then
+                echo "⚠️ LEGACY"
+            fi
+            ;;
+        "Adobe Photoshop"*)
+            if [[ "$version" =~ "CS" ]] || [[ "$major_version" -lt 21 ]]; then
+                echo "⚠️ LEGACY"
+            fi
+            ;;
+    esac
+}
+
+# Get running GUI applications per user
+get_user_applications() {
+    local app_inventory=""
+    local total_apps=0
+    local user_list=$(who | grep "console" | awk '{print $1}' | sort -u)
+    
+    if [[ -z "$user_list" ]]; then
+        echo "0"
+        echo "No users logged in"
+        return
+    fi
+    
+    while IFS= read -r user; do
+        [[ -z "$user" ]] && continue
+        
+        local user_id=$(id -u "$user" 2>/dev/null)
+        [[ -z "$user_id" ]] && continue
+        
+        # Get GUI apps for this user using osascript
+        local apps=$(sudo -u "$user" osascript -e 'tell application "System Events" to get name of every process whose background only is false' 2>/dev/null | tr ',' '\n' | sed 's/^ *//')
+        
+        if [[ -z "$apps" ]]; then
+            app_inventory+="[${user}] No GUI apps detected"$'\n'
+            continue
+        fi
+        
+        local user_apps=""
+        while IFS= read -r app; do
+            [[ -z "$app" ]] && continue
+            ((total_apps++))
+            
+            # Try to find app bundle and get version
+            local app_path=$(mdfind "kMDItemKind == 'Application' && kMDItemFSName == '${app}.app'" 2>/dev/null | head -1)
+            
+            if [[ -n "$app_path" ]]; then
+                local version=$(get_app_version "$app_path")
+                local legacy_flag=$(check_legacy_status "$app" "$version")
+                
+                if [[ -n "$version" ]]; then
+                    user_apps+="${app} ${version}"
+                else
+                    user_apps+="${app}"
+                fi
+                
+                [[ -n "$legacy_flag" ]] && user_apps+=" ${legacy_flag}"
+                user_apps+=", "
+            else
+                user_apps+="${app}, "
+            fi
+        done <<< "$apps"
+        
+        # Clean up trailing comma
+        user_apps=$(echo "$user_apps" | sed 's/, $//')
+        app_inventory+="[${user}] ${user_apps}"$'\n'
+        
+    done <<< "$user_list"
+    
+    echo "$total_apps"
+    echo "$app_inventory" | sed '/^$/d'
+}
+
+# Check VMware status and get VM details
+check_vmware_status() {
+    if pgrep -x "vmware-vmx" >/dev/null 2>&1; then
+        echo "Running"
+    else
+        echo "Not Running"
+    fi
+}
+
+get_vm_details() {
+    local vm_activity=""
+    local vm_count=0
+    local total_cpu=0
+    local total_mem=0
+    
+    local vmware_pids=$(pgrep -x "vmware-vmx" 2>/dev/null)
+    
+    if [[ -z "$vmware_pids" ]]; then
+        echo "0|0|0"  # vm_count|cpu|mem
+        echo "No VMs running"
+        return
+    fi
+    
+    while IFS= read -r pid; do
+        [[ -z "$pid" ]] && continue
+        ((vm_count++))
+        
+        # Get process details
+        local ps_line=$(ps -p "$pid" -o user=,pid=,%cpu=,rss=,etime=,command= 2>/dev/null)
+        local vm_user=$(echo "$ps_line" | awk '{print $1}')
+        local cpu_pct=$(echo "$ps_line" | awk '{print $3}')
+        local mem_kb=$(echo "$ps_line" | awk '{print $4}')
+        local mem_gb=$(awk "BEGIN {printf \"%.2f\", $mem_kb/1024/1024}")
+        local runtime=$(echo "$ps_line" | awk '{print $5}')
+        local cmd=$(echo "$ps_line" | awk '{for(i=6;i<=NF;i++) printf "%s ", $i}')
+        
+        # Try to extract guest OS from command line
+        local guest_os="Unknown"
+        if [[ "$cmd" =~ \.vmwarevm ]]; then
+            local vm_path=$(echo "$cmd" | grep -o '[^"]*\.vmwarevm/[^"]*\.vmx' | head -1)
+            if [[ -n "$vm_path" && -f "$vm_path" ]]; then
+                guest_os=$(grep "guestOS" "$vm_path" 2>/dev/null | cut -d'"' -f2)
+                
+                # Translate guest OS codes to readable names
+                case "$guest_os" in
+                    *"win7"*) guest_os="Windows 7" ;;
+                    *"win10"*) guest_os="Windows 10" ;;
+                    *"darwin"*|*"macos"*) 
+                        # Try to extract version
+                        if [[ "$guest_os" =~ "10.3" ]]; then
+                            guest_os="Mac OS X 10.3 Panther"
+                        elif [[ "$guest_os" =~ "10." ]]; then
+                            guest_os="Mac OS X ${guest_os##*10.}"
+                        else
+                            guest_os="macOS"
+                        fi
+                        ;;
+                esac
+            fi
+        fi
+        
+        # Flag risky guest OSes
+        local guest_risk=""
+        case "$guest_os" in
+            *"Windows 7"*) guest_risk=" ⚠️ EOL OS - legacy DirectX translation" ;;
+            *"10.3"*) guest_risk=" ⚠️ Guest OS from 2003 - extreme legacy emulation" ;;
+            *"10.4"*|*"10.5"*|*"10.6"*) guest_risk=" ⚠️ PowerPC/legacy emulation" ;;
+        esac
+        
+        vm_activity+="VM ${vm_count} [${vm_user}]: ${guest_os}"$'\n'
+        vm_activity+="  PID ${pid}, CPU ${cpu_pct}%, RAM ${mem_gb}GB, Runtime ${runtime}"
+        [[ -n "$guest_risk" ]] && vm_activity+=$'\n'"  ${guest_risk}"
+        vm_activity+=$'\n'$'\n'
+        
+        # Accumulate totals
+        total_cpu=$(awk "BEGIN {printf \"%.1f\", $total_cpu + $cpu_pct}")
+        total_mem=$(awk "BEGIN {printf \"%.2f\", $total_mem + $mem_gb}")
+        
+    done <<< "$vmware_pids"
+    
+    echo "${vm_count}|${total_cpu}|${total_mem}"
+    echo "$vm_activity" | sed '/^$/d'
+}
+
+# Determine high risk app status
+determine_high_risk() {
+    local vmware_status="$1"
+    local app_inventory="$2"
+    
+    if [[ "$vmware_status" == "Running" ]]; then
+        if echo "$app_inventory" | grep -q "VMware Fusion.*LEGACY"; then
+            echo "VMware Legacy"
+            return
+        fi
+    fi
+    
+    # Check for other legacy apps
+    local legacy_count=$(echo "$app_inventory" | grep -c "LEGACY" 2>/dev/null || echo "0")
+    if [[ "$legacy_count" -gt 1 ]]; then
+        echo "Multiple Legacy"
+        return
+    elif [[ "$legacy_count" -eq 1 ]]; then
+        echo "VMware Legacy"
+        return
+    fi
+    
+    echo "None"
+}
+
+# Get resource hogs (>80% CPU or >4GB RAM)
+get_resource_hogs() {
+    local hogs=""
+    
+    # High CPU processes (>80%)
+    local high_cpu=$(ps aux | awk '$3 > 80.0 {printf "%s (%s): CPU %.1f%%, RAM %.2fGB, User: %s\n", $11, $2, $3, $6/1024/1024, $1}' 2>/dev/null)
+    
+    # High memory processes (>4GB)
+    local high_mem=$(ps aux | awk '$6/1024/1024 > 4.0 {printf "%s (%s): CPU %.1f%%, RAM %.2fGB, User: %s\n", $11, $2, $3, $6/1024/1024, $1}' 2>/dev/null)
+    
+    [[ -n "$high_cpu" ]] && hogs+="$high_cpu"$'\n'
+    [[ -n "$high_mem" ]] && hogs+="$high_mem"$'\n'
+    
+    if [[ -z "$hogs" ]]; then
+        echo "No resource hogs detected"
+    else
+        echo "$hogs" | sed '/^$/d' | sort -u
+    fi
+}
+
+# Generate legacy software flags with detailed explanations
+generate_legacy_flags() {
+    local app_inventory="$1"
+    local vm_activity="$2"
+    local flags=""
+    
+    if echo "$app_inventory" | grep -q "VMware Fusion.*LEGACY"; then
+        local vmware_version=$(echo "$app_inventory" | grep "VMware Fusion" | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+        flags+="VMware Fusion ${vmware_version}: Pre-13.x uses deprecated kernel extensions, known GPU conflicts with Sonoma, incompatible with Metal rendering pipeline."
+        
+        # Add VM-specific warnings
+        if echo "$vm_activity" | grep -q "⚠️"; then
+            local legacy_vms=$(echo "$vm_activity" | grep -c "⚠️" 2>/dev/null || echo "0")
+            flags+=" Running ${legacy_vms} VM(s) with legacy guest OSes."
+        fi
+        
+        flags+=" UPGRADE RECOMMENDED to VMware Fusion 13.5+"$'\n'
+    fi
+    
+    if [[ -z "$flags" ]]; then
+        echo "No legacy software detected"
+    else
+        echo "$flags" | sed '/^$/d'
+    fi
+}
+
+# Execute user/app monitoring (with error handling)
+user_count_raw=$(get_active_users)
+user_count=$(echo "$user_count_raw" | head -1)
+active_users=$(echo "$user_count_raw" | tail -n +2)
+[[ -z "$active_users" ]] && active_users="No console users"
+[[ -z "$user_count" ]] && user_count=0
+
+app_data=$(get_user_applications)
+total_gui_apps=$(echo "$app_data" | head -1)
+application_inventory=$(echo "$app_data" | tail -n +2)
+[[ -z "$application_inventory" ]] && application_inventory="No applications detected"
+[[ -z "$total_gui_apps" ]] && total_gui_apps=0
+
+vmware_status=$(check_vmware_status)
+[[ -z "$vmware_status" ]] && vmware_status="Not Running"
+
+vm_data=$(get_vm_details)
+vm_metrics=$(echo "$vm_data" | head -1)
+vm_activity=$(echo "$vm_data" | tail -n +2)
+vm_count=$(echo "$vm_metrics" | cut -d'|' -f1)
+vmware_cpu_percent=$(echo "$vm_metrics" | cut -d'|' -f2)
+vmware_memory_gb=$(echo "$vm_metrics" | cut -d'|' -f3)
+[[ -z "$vm_activity" ]] && vm_activity="No VMs running"
+[[ -z "$vm_count" ]] && vm_count=0
+[[ -z "$vmware_cpu_percent" ]] && vmware_cpu_percent=0
+[[ -z "$vmware_memory_gb" ]] && vmware_memory_gb=0
+
+high_risk_apps=$(determine_high_risk "$vmware_status" "$application_inventory")
+[[ -z "$high_risk_apps" ]] && high_risk_apps="None"
+
+resource_hogs=$(get_resource_hogs)
+[[ -z "$resource_hogs" ]] && resource_hogs="No resource hogs detected"
+
+legacy_software_flags=$(generate_legacy_flags "$application_inventory" "$vm_activity")
+[[ -z "$legacy_software_flags" ]] && legacy_software_flags="No legacy software detected"
+
 run_duration_seconds=$SECONDS
 
 ###############################################################################
@@ -276,6 +598,13 @@ JSON_PAYLOAD=$(jq -n \
   --arg tc "$top_crashes" \
   --arg gpu_freeze "$gpu_freeze_detected" \
   --arg gpu_events "$gpu_freeze_events" \
+  --arg active_users "$active_users" \
+  --arg app_inv "$application_inventory" \
+  --arg vmware_stat "$vmware_status" \
+  --arg vm_act "$vm_activity" \
+  --arg high_risk "$high_risk_apps" \
+  --arg res_hogs "$resource_hogs" \
+  --arg legacy_flags "$legacy_software_flags" \
   --argjson run_duration "$run_duration_seconds" \
   --argjson ek "$error_kernel_1h" \
   --argjson ew "$error_windowserver_1h" \
@@ -289,6 +618,11 @@ JSON_PAYLOAD=$(jq -n \
   --argjson cc "$crash_count" \
   --argjson tt "$thermal_throttles_1h" \
   --argjson fm "$fan_max_events_1h" \
+  --argjson user_cnt "$user_count" \
+  --argjson app_cnt "$total_gui_apps" \
+  --argjson vm_cnt "$vm_count" \
+  --argjson vmw_cpu "$vmware_cpu_percent" \
+  --argjson vmw_mem "$vmware_memory_gb" \
   '{fields: {
       "Run Duration (seconds)": $run_duration,
       "Timestamp": $ts,
@@ -321,7 +655,19 @@ JSON_PAYLOAD=$(jq -n \
       "thermal_throttles_1h": $tt,
       "GPU Freeze Detected": $gpu_freeze,
       "GPU Freeze Events": $gpu_events,
-      "fan_max_events_1h": $fm
+      "fan_max_events_1h": $fm,
+      "Active Users": $active_users,
+      "Application Inventory": $app_inv,
+      "VMware Status": $vmware_stat,
+      "VM Activity": $vm_act,
+      "High Risk Apps": $high_risk,
+      "Resource Hogs": $res_hogs,
+      "Legacy Software Flags": $legacy_flags,
+      "user_count": $user_cnt,
+      "total_gui_apps": $app_cnt,
+      "vm_count": $vm_cnt,
+      "vmware_cpu_percent": $vmw_cpu,
+      "vmware_memory_gb": $vmw_mem
   }}')
 
 ###############################################################################
