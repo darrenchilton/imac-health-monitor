@@ -1,541 +1,731 @@
 #!/bin/bash
+SECONDS=0
 
-################################################################################
-# iMac Health Monitor Script
-#
-# Collects system health metrics on macOS and sends them to Airtable.
-# Designed to be run manually or via launchd (e.g., once a day).
-################################################################################
-
-set -euo pipefail
-
-# Directory of this script
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_FILE="${HOME}/Library/Logs/imac_health_monitor.log"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 ###############################################################################
-# Logging helpers
+# LOCK FILE MECHANISM - Prevent concurrent execution
 ###############################################################################
+LOCK_FILE="$SCRIPT_DIR/.health_monitor.lock"
+MAX_LOCK_AGE=1800  # 30 minutes - if lock is older, assume stale
 
-log_message() {
-    local level="$1"
-    local message="$2"
-    local timestamp
-    timestamp=$(date +"%Y-%m-%d %H:%M:%S")
-    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
-}
+# Check for existing lock
+if [ -f "$LOCK_FILE" ]; then
+    LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+    LOCK_TIME=$(stat -f "%m" "$LOCK_FILE" 2>/dev/null || stat -c "%Y" "$LOCK_FILE" 2>/dev/null)
+    CURRENT_TIME=$(date +%s)
+    LOCK_AGE=$((CURRENT_TIME - LOCK_TIME))
+    
+    # Check if the process is actually running
+    if ps -p "$LOCK_PID" > /dev/null 2>&1; then
+        echo "Another instance (PID $LOCK_PID) is already running. Exiting."
+        exit 0
+    elif [ "$LOCK_AGE" -lt "$MAX_LOCK_AGE" ]; then
+        echo "Recent lock file exists but process not found. Waiting for stale lock to expire."
+        exit 0
+    else
+        echo "Stale lock file detected (age: ${LOCK_AGE}s). Removing and continuing."
+        rm -f "$LOCK_FILE"
+    fi
+fi
 
-log_info()  { log_message "INFO"  "$1"; }
-log_warn()  { log_message "WARN"  "$1"; }
-log_error() { log_message "ERROR" "$1"; }
+# Create lock file with our PID
+echo $$ > "$LOCK_FILE"
 
-###############################################################################
-# Load environment (.env)
-###############################################################################
+# Ensure lock file is removed on exit
+trap "rm -f '$LOCK_FILE'" EXIT INT TERM
 
-ENV_FILE="${SCRIPT_DIR}/.env"
+# Load .env
+ENV_PATH="$SCRIPT_DIR/.env"
 
-if [ ! -f "$ENV_FILE" ]; then
-    log_error "Missing .env file at $ENV_FILE. Please run setup.sh first."
+if [ ! -f "$ENV_PATH" ]; then
+    echo "ERROR: .env file not found at $ENV_PATH"
     exit 1
 fi
 
-set -o allexport
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +o allexport
+set -a
+source "$ENV_PATH"
+set +a
 
-# Validate required env vars
-REQUIRED_VARS=("AIRTABLE_API_KEY" "AIRTABLE_BASE_ID" "AIRTABLE_TABLE_NAME")
-for var in "${REQUIRED_VARS[@]}"; do
-    if [ -z "${!var:-}" ]; then
-        log_error "Required environment variable $var is not set in .env"
-        exit 1
+AIRTABLE_TABLE_NAME="${AIRTABLE_TABLE_NAME:-System Health}"
+
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+safe_timeout() {
+    local seconds="$1"; shift
+    if have_cmd gtimeout; then gtimeout "${seconds}s" "$@"
+    elif have_cmd timeout; then timeout "${seconds}s" "$@"
+    else "$@"; fi
+}
+
+# FIXED: Use ISO 8601 format for timestamp
+timestamp=$(date -u "+%Y-%m-%dT%H:%M:%SZ")
+hostname=$(hostname)
+macos_version=$(sw_vers -productVersion)
+
+# Get the actual boot disk device (e.g., disk2s1 -> disk2)
+boot_device=$(diskutil info / 2>/dev/null | awk '/Device Node:/ {print $3}' | sed 's/s[0-9]*$//')
+[[ -z "$boot_device" ]] && boot_device="disk0"  # Fallback to disk0 if detection fails
+
+smart_status=$(safe_timeout 5 diskutil info "$boot_device" 2>/dev/null | awk -F': *' '/SMART Status/ {print $2}' | xargs)
+[[ -z "$smart_status" ]] && smart_status="Unknown"
+
+###############################################################################
+# FIXED: Kernel Panic Detection - Check actual .panic files, not log strings
+###############################################################################
+panic_files=$(ls -1 /Library/Logs/DiagnosticReports/*.panic 2>/dev/null)
+kernel_panics=0
+
+if [[ -n "$panic_files" ]]; then
+    # Only count panics from last 24 hours
+    cutoff_time=$(date -v-24H +%s 2>/dev/null || date -d "24 hours ago" +%s)
+    while IFS= read -r file; do
+        [[ -z "$file" ]] && continue
+        file_time=$(stat -f "%m" "$file" 2>/dev/null || stat -c "%Y" "$file" 2>/dev/null)
+        if [[ -n "$file_time" && "$file_time" -ge "$cutoff_time" ]]; then
+            ((kernel_panics++))
+        fi
+    done <<< "$panic_files"
+fi
+
+check_tm_age() {
+    local path=$(safe_timeout 5 tmutil latestbackup 2>/dev/null)
+    [[ -z "$path" ]] && echo "-1" && return
+    local ts=$(stat -f "%m" "$path" 2>/dev/null)
+    [[ -z "$ts" ]] && echo "-1" && return
+    local now=$(date +%s)
+    echo $(( (now - ts) / 86400 ))
+}
+tm_age_days=$(check_tm_age)
+
+software_updates=$(safe_timeout 15 softwareupdate --list 2>&1 | \
+    grep -q "No new software available" && echo "Up to Date" || echo "Unknown")
+
+###############################################################################
+# FIXED: Increased timeout to 5 minutes, added timeout detection
+###############################################################################
+safe_log() { 
+    local timeout_val=300  # 5 minutes max
+    local result
+    result=$(safe_timeout "$timeout_val" log show --style syslog --last "$1" 2>/dev/null)
+    if [[ $? -eq 124 ]]; then
+        echo "LOG_TIMEOUT"
+    else
+        echo "$result"
+    fi
+}
+
+LOG_1H=$(safe_log "1h")
+LOG_5M=$(safe_log "5m")
+
+# Check for timeout condition
+if [[ "$LOG_1H" == "LOG_TIMEOUT" ]]; then
+    echo "WARNING: 1-hour log collection timed out after 5 minutes"
+    errors_1h=0
+    critical_1h=0
+    error_kernel_1h=0
+    error_windowserver_1h=0
+    error_spotlight_1h=0
+    error_icloud_1h=0
+    error_disk_io_1h=0
+    error_network_1h=0
+    error_gpu_1h=0
+    error_systemstats_1h=0
+    error_power_1h=0
+    thermal_throttles_1h=0
+    fan_max_events_1h=0
+    top_errors="Log collection timed out"
+else
+    ###############################################################################
+    # FIXED: More accurate error counting
+    ###############################################################################
+    # Total error count
+    errors_1h=$(echo "$LOG_1H" | grep -i "error" | wc -l | tr -d ' ')
+    
+    # Critical errors - only count actual fault-level events, ensure it doesn't exceed total
+    critical_1h=$(echo "$LOG_1H" | grep -iE "<Fault>|<Critical>|\[critical\]|\[fatal\]" | wc -l | tr -d ' ')
+    
+    # Sanity check: critical can't exceed total errors
+    if [[ "$critical_1h" -gt "$errors_1h" ]]; then
+        critical_1h=$errors_1h
+    fi
+    
+    ###############################################################################
+    # FIXED: Category-specific errors - require "error" keyword to avoid false positives
+    ###############################################################################
+    error_kernel_1h=$(echo "$LOG_1H" | grep -i "kernel" | grep -iE "error|fail|panic" | wc -l | tr -d ' ')
+    error_windowserver_1h=$(echo "$LOG_1H" | grep -i "WindowServer" | grep -iE "error|fail|crash" | wc -l | tr -d ' ')
+    error_spotlight_1h=$(echo "$LOG_1H" | grep -i "metadata\|spotlight" | grep -iE "error|fail" | wc -l | tr -d ' ')
+    error_icloud_1h=$(echo "$LOG_1H" | grep -iE "icloud|CloudKit" | grep -iE "error|fail|timeout" | wc -l | tr -d ' ')
+    error_disk_io_1h=$(echo "$LOG_1H" | grep -iE "I/O error|disk.*error|read.*fail|write.*fail" | wc -l | tr -d ' ')
+    error_network_1h=$(echo "$LOG_1H" | grep -iE "network|dns|resolver" | grep -iE "error|fail|timeout|unreachable" | wc -l | tr -d ' ')
+    error_gpu_1h=$(echo "$LOG_1H" | grep -iE "GPU|AMDRadeon|Metal" | grep -iE "error|fail|timeout|hang|reset" | wc -l | tr -d ' ')
+    error_systemstats_1h=$(echo "$LOG_1H" | grep -i "systemstats" | grep -iE "error|fail" | wc -l | tr -d ' ')
+    error_power_1h=$(echo "$LOG_1H" | grep -i "powerd" | grep -iE "error|fail|warning" | wc -l | tr -d ' ')
+    
+    thermal_throttles_1h=$(echo "$LOG_1H" | grep -iE "thermal.*throttl|throttl.*thermal|cpu.*throttl" | wc -l | tr -d ' ')
+    fan_max_events_1h=$(echo "$LOG_1H" | grep -iE "fan.*max|fan.*speed.*high|fan.*rpm" | wc -l | tr -d ' ')
+    
+    top_errors=$(echo "$LOG_1H" \
+        | grep -i "error" \
+        | sed 's/.*error/error/i' \
+        | sort | uniq -c | sort -nr | head -3 \
+        | awk '{$1=""; print substr($0,2)}' \
+        | paste -sd " | " -)
+fi
+
+# Handle 5-minute log timeout
+if [[ "$LOG_5M" == "LOG_TIMEOUT" ]]; then
+    echo "WARNING: 5-minute log collection timed out"
+    recent_5m=0
+else
+    recent_5m=$(echo "$LOG_5M" | grep -i "error" | wc -l | tr -d ' ')
+fi
+
+# Check for crash reports (multiple file types)
+crash_files=$(ls -1t ~/Library/Logs/DiagnosticReports/*.{crash,ips,panic,diag} 2>/dev/null)
+crash_count=$(echo "$crash_files" | grep -v '^$' | wc -l | tr -d ' ')
+top_crashes=$(echo "$crash_files" | head -3 | sed 's/.*\///' | paste -sd "," -)
+
+# FIXED: Calculate additional metrics - check the actual boot data volume
+drive_info=$(df -h /System/Volumes/Data 2>/dev/null | awk 'NR==2 {printf "Total: %s, Used: %s (%s), Available: %s", $2, $3, $5, $4}')
+# Fallback to root if Data volume not found
+[[ -z "$drive_info" ]] && drive_info=$(df -h / | awk 'NR==2 {printf "Total: %s, Used: %s (%s), Available: %s", $2, $3, $5, $4}')
+uptime_val=$(uptime | awk '{print $3,$4}' | sed 's/,$//')
+memory_pressure=$(memory_pressure 2>/dev/null | grep "System-wide memory free percentage:" | awk '{print $5}' || echo "N/A")
+cpu_temp=$(osx-cpu-temp 2>/dev/null || echo "N/A")
+
+# FIXED: Format Kernel Panics text
+if [[ "$kernel_panics" -eq 0 ]]; then
+    kernel_panics_text="No kernel panics in last 24 hours"
+else
+    kernel_panics_text="${kernel_panics} kernel panic(s) detected in last 24 hours"
+fi
+
+# FIXED: Format System Errors text with burst detection
+system_errors_text="Log Activity: ${errors_1h} errors (${recent_5m} recent, ${critical_1h} critical)"
+
+# FIXED: Format Time Machine status
+tm_status="Configured; Latest: Unable to determine"
+if [[ "$tm_age_days" -ne -1 && "$tm_age_days" -gt 0 ]]; then
+    # Calculate the date X days ago
+    backup_date=$(date -v-${tm_age_days}d '+%Y-%m-%d' 2>/dev/null || date -d "${tm_age_days} days ago" '+%Y-%m-%d' 2>/dev/null || echo "Unknown")
+    tm_status="Configured; Latest: ${backup_date}"
+elif [[ "$tm_age_days" -eq 0 ]]; then
+    tm_status="Configured; Latest: $(date '+%Y-%m-%d')"
+fi
+
+# FIXED: Determine severity and health score based on error analysis
+# Key insight: Compare recent (5m) vs total (1h) errors to detect active vs resolved issues
+if [[ "$recent_5m" -gt 50 ]]; then
+    severity="Critical"
+    health_score_label="Attention Needed"
+    reasons="Active error burst detected (${recent_5m} errors in last 5 min)"
+elif [[ "$recent_5m" -gt 20 ]]; then
+    severity="Warning"
+    health_score_label="Attention Needed"
+    reasons="Elevated recent errors (${recent_5m} errors in last 5 min)"
+elif [[ "$errors_1h" -gt 200 && "$recent_5m" -lt 10 ]]; then
+    severity="Info"
+    health_score_label="Healthy"
+    reasons="Historical errors present but currently resolved (${errors_1h} total, ${recent_5m} recent)"
+elif [[ "$critical_1h" -gt 10 ]]; then
+    severity="Warning"
+    health_score_label="Attention Needed"
+    reasons="Elevated critical errors (${critical_1h} faults in last hour)"
+else
+    severity="Info"
+    health_score_label="Healthy"
+    reasons="System operating normally"
+fi
+
+###############################################################################
+# GPU / WindowServer Freeze Detector (last 2 minutes)
+###############################################################################
+gpu_freeze_patterns=(
+    "GPU Reset"
+    "GPU Hang"
+    "AMDRadeon"
+    "AGC::"
+    "WindowServer.*stalled"
+    "WindowServer.*overload"
+    "IOSurface"
+    "Metal.*timeout"
+    "timed out waiting for"
+    "GPU Debug Info"
+)
+
+gpu_freeze_detected="No"
+gpu_recent_log=$(safe_timeout 8 log show --last 2m --predicate 'eventMessage CONTAINS[c] "gpu" OR eventMessage CONTAINS[c] "WindowServer" OR eventMessage CONTAINS[c] "display" OR eventMessage CONTAINS[c] "metal"' 2>/dev/null)
+gpu_freeze_events=""
+
+for pattern in "${gpu_freeze_patterns[@]}"; do
+    match=$(echo "$gpu_recent_log" | grep -E "$pattern" | head -5)
+    if [ -n "$match" ]; then
+        gpu_freeze_detected="Yes"
+        gpu_freeze_events+="${pattern}: $(echo "$match" | wc -l | tr -d ' ') events; "
     fi
 done
 
-###############################################################################
-# Utility: safe command execution
-###############################################################################
+# Clean trailing separator
+gpu_freeze_events=$(echo "$gpu_freeze_events" | sed 's/; $//')
+# Ensure GPU Freeze Events is not empty
+if [ -z "$gpu_freeze_events" ]; then
+    gpu_freeze_events="None"
+fi
 
-run_cmd() {
-    local description="$1"
-    shift
-    local output
+# Ensure field is not empty (Airtable rejects "")
+if [ -z "$gpu_freeze_detected" ]; then
+    gpu_freeze_detected="No"
+fi
 
-    log_info "Running: $description"
-    if ! output="$("$@" 2>&1)"; then
-        log_warn "Command failed: $description"
-        log_warn "Error output: $output"
-        echo "Unavailable"
-        return 1
-    fi
-
-    echo "$output"
-    return 0
-}
+# FIXED: Adjust for hardware issues
+[[ "$smart_status" != "Verified" && "$smart_status" != "Unknown" ]] && severity="Critical" && health_score_label="Attention Needed" && reasons="SMART status: ${smart_status}"
+[[ "$kernel_panics" -gt 0 ]] && severity="Critical" && health_score_label="Attention Needed" && reasons="Kernel panic detected"
+[[ "$tm_age_days" -gt 7 ]] && severity="Warning" && health_score_label="Attention Needed" && reasons="${reasons}; Time Machine backup overdue (${tm_age_days} days)"
 
 ###############################################################################
-# Metric Collection Functions
+# USER AND APPLICATION MONITORING
 ###############################################################################
 
-get_timestamp() {
-    date +"%Y-%m-%d %H:%M:%S"
-}
-
-get_hostname() {
-    hostname
-}
-
-get_macos_version() {
-    sw_vers -productVersion
-}
-
-# Function to check SMART status using "diskutil"
-get_smart_status() {
-    local smart_status
-    smart_status=$(diskutil info / | grep "SMART Status" | awk -F: '{print $2}' | xargs)
-
-    if [ -z "$smart_status" ]; then
-        smart_status="Not Available"
-    fi
-    echo "$smart_status"
-}
-
-# Function to check for recent kernel panics (last 24 hours)
-get_kernel_panics() {
-    local since timeframe
-    # last 24 hours
-    timeframe="24 hours"
-    since="24h"
-
-    if ! command -v log >/dev/null 2>&1; then
-        echo "log command unavailable"
+# Get active console users with session info
+get_active_users() {
+    local users_info=""
+    local user_list=$(who | grep "console" | awk '{print $1}' | sort -u)
+    local count=0
+    
+    if [[ -z "$user_list" ]]; then
+        echo "0"
+        echo "No console users"
         return
     fi
+    
+    while IFS= read -r user; do
+        [[ -z "$user" ]] && continue
+        ((count++))
+        
+        # Get idle time from 'w' command
+        local idle=$(w -h "$user" 2>/dev/null | grep "console" | awk '{print $4}' | head -1)
+        [[ -z "$idle" ]] && idle="active"
+        
+        users_info+="${user} (console, idle ${idle})"$'\n'
+    done <<< "$user_list"
+    
+    echo "$count"  # Return count for user_count field
+    echo "$users_info" | sed '/^$/d'  # Return formatted text
+}
 
-    # Count panic lines in last 24h
-    local count
-    count=$(log show --predicate 'eventMessage CONTAINS "panic(cpu" OR eventMessage CONTAINS "panicString"' --style syslog --last "$since" 2>/dev/null | wc -l | tr -d ' ')
+# Get app version safely
+get_app_version() {
+    local app_path="$1"
+    local version=$(defaults read "${app_path}/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null)
+    [[ -z "$version" ]] && version=$(defaults read "${app_path}/Contents/Info.plist" CFBundleVersion 2>/dev/null)
+    echo "$version"
+}
 
-    if [ -z "$count" ]; then
-        count=0
+# Check if app is legacy/problematic
+check_legacy_status() {
+    local app_name="$1"
+    local version="$2"
+    local major_version=$(echo "$version" | cut -d. -f1)
+    
+    case "$app_name" in
+        "VMware Fusion")
+            if [[ "$major_version" -lt 13 ]]; then
+                echo "⚠️ LEGACY"
+            fi
+            ;;
+        "VirtualBox")
+            if [[ "$major_version" -lt 7 ]]; then
+                echo "⚠️ LEGACY"
+            fi
+            ;;
+        "Parallels Desktop")
+            if [[ "$major_version" -lt 17 ]]; then
+                echo "⚠️ LEGACY"
+            fi
+            ;;
+        "Adobe Photoshop"*)
+            if [[ "$version" =~ "CS" ]] || [[ "$major_version" -lt 21 ]]; then
+                echo "⚠️ LEGACY"
+            fi
+            ;;
+    esac
+}
+
+# Get running GUI applications per user
+get_user_applications() {
+    local app_inventory=""
+    local total_apps=0
+    local user_list=$(who | grep "console" | awk '{print $1}' | sort -u)
+    
+    if [[ -z "$user_list" ]]; then
+        echo "0"
+        echo "No users logged in"
+        return
     fi
+    
+    while IFS= read -r user; do
+        [[ -z "$user" ]] && continue
+        
+        local user_id=$(id -u "$user" 2>/dev/null)
+        [[ -z "$user_id" ]] && continue
+        
+        # Get GUI apps for this user using osascript
+        local apps=$(sudo -u "$user" osascript -e 'tell application "System Events" to get name of every process whose background only is false' 2>/dev/null | tr ',' '\n' | sed 's/^ *//')
+        
+        if [[ -z "$apps" ]]; then
+            app_inventory+="[${user}] No GUI apps detected"$'\n'
+            continue
+        fi
+        
+        local user_apps=""
+        while IFS= read -r app; do
+            [[ -z "$app" ]] && continue
+            ((total_apps++))
+            
+            # Try to find app bundle and get version
+            local app_path=$(mdfind "kMDItemKind == 'Application' && kMDItemFSName == '${app}.app'" 2>/dev/null | head -1)
+            
+            if [[ -n "$app_path" ]]; then
+                local version=$(get_app_version "$app_path")
+                local legacy_flag=$(check_legacy_status "$app" "$version")
+                
+                if [[ -n "$version" ]]; then
+                    user_apps+="${app} ${version}"
+                else
+                    user_apps+="${app}"
+                fi
+                
+                [[ -n "$legacy_flag" ]] && user_apps+=" ${legacy_flag}"
+                user_apps+=", "
+            else
+                user_apps+="${app}, "
+            fi
+        done <<< "$apps"
+        
+        # Clean up trailing comma
+        user_apps=$(echo "$user_apps" | sed 's/, $//')
+        app_inventory+="[${user}] ${user_apps}"$'\n'
+        
+    done <<< "$user_list"
+    
+    echo "$total_apps"
+    echo "$app_inventory" | sed '/^$/d'
+}
 
-    if [ "$count" -eq 0 ]; then
-        echo "No kernel panics in last $timeframe"
+# Check VMware status and get VM details
+check_vmware_status() {
+    if pgrep -x "vmware-vmx" >/dev/null 2>&1; then
+        echo "Running"
     else
-        echo "$count kernel panic-related log entries in last $timeframe"
+        echo "Not Running"
     fi
 }
 
-# Function to check macOS unified logs for system errors and critical events
-get_system_errors() {
-    # Last 1 hour of errors/critical logs
-    if ! command -v log >/dev/null 2>&1; then
-        echo "log command unavailable"
+get_vm_details() {
+    local vm_activity=""
+    local vm_count=0
+    local total_cpu=0
+    local total_mem=0
+    
+    local vmware_pids=$(pgrep -x "vmware-vmx" 2>/dev/null)
+    
+    if [[ -z "$vmware_pids" ]]; then
+        echo "0|0|0"  # vm_count|cpu|mem
+        echo "No VMs running"
         return
     fi
-
-    local last="1h"
-    local all_errors critical_count error_count
-
-    all_errors=$(log show --predicate 'messageType == error OR messageType == fault' --style syslog --last "$last" 2>/dev/null || true)
-    error_count=$(printf "%s" "$all_errors" | wc -l | tr -d ' ')
-
-    # Check for "critical" severity in the same time window
-    local all_critical
-    all_critical=$(log show --predicate 'messageType == fault OR eventMessage CONTAINS "critical"' --style syslog --last "$last" 2>/dev/null || true)
-    critical_count=$(printf "%s" "$all_critical" | wc -l | tr -d ' ')
-
-    echo "Errors: $error_count, Critical: $critical_count (last 1h)"
+    
+    while IFS= read -r pid; do
+        [[ -z "$pid" ]] && continue
+        ((vm_count++))
+        
+        # Get process details
+        local ps_line=$(ps -p "$pid" -o user=,pid=,%cpu=,rss=,etime=,command= 2>/dev/null)
+        local vm_user=$(echo "$ps_line" | awk '{print $1}')
+        local cpu_pct=$(echo "$ps_line" | awk '{print $3}')
+        local mem_kb=$(echo "$ps_line" | awk '{print $4}')
+        local mem_gb=$(awk "BEGIN {printf \"%.2f\", $mem_kb/1024/1024}")
+        local runtime=$(echo "$ps_line" | awk '{print $5}')
+        local cmd=$(echo "$ps_line" | awk '{for(i=6;i<=NF;i++) printf "%s ", $i}')
+        
+        # Try to extract guest OS from command line
+        local guest_os="Unknown"
+        if [[ "$cmd" =~ \.vmwarevm ]]; then
+            local vm_path=$(echo "$cmd" | grep -o '[^"]*\.vmwarevm/[^"]*\.vmx' | head -1)
+            if [[ -n "$vm_path" && -f "$vm_path" ]]; then
+                guest_os=$(grep "guestOS" "$vm_path" 2>/dev/null | cut -d'"' -f2)
+                
+                # Translate guest OS codes to readable names
+                case "$guest_os" in
+                    *"win7"*) guest_os="Windows 7" ;;
+                    *"win10"*) guest_os="Windows 10" ;;
+                    *"darwin"*|*"macos"*) 
+                        # Try to extract version
+                        if [[ "$guest_os" =~ "10.3" ]]; then
+                            guest_os="Mac OS X 10.3 Panther"
+                        elif [[ "$guest_os" =~ "10." ]]; then
+                            guest_os="Mac OS X ${guest_os##*10.}"
+                        else
+                            guest_os="macOS"
+                        fi
+                        ;;
+                esac
+            fi
+        fi
+        
+        # Flag risky guest OSes
+        local guest_risk=""
+        case "$guest_os" in
+            *"Windows 7"*) guest_risk=" ⚠️ EOL OS - legacy DirectX translation" ;;
+            *"10.3"*) guest_risk=" ⚠️ Guest OS from 2003 - extreme legacy emulation" ;;
+            *"10.4"*|*"10.5"*|*"10.6"*) guest_risk=" ⚠️ PowerPC/legacy emulation" ;;
+        esac
+        
+        vm_activity+="VM ${vm_count} [${vm_user}]: ${guest_os}"$'\n'
+        vm_activity+="  PID ${pid}, CPU ${cpu_pct}%, RAM ${mem_gb}GB, Runtime ${runtime}"
+        [[ -n "$guest_risk" ]] && vm_activity+=$'\n'"  ${guest_risk}"
+        vm_activity+=$'\n'$'\n'
+        
+        # Accumulate totals
+        total_cpu=$(awk "BEGIN {printf \"%.1f\", $total_cpu + $cpu_pct}")
+        total_mem=$(awk "BEGIN {printf \"%.2f\", $total_mem + $mem_gb}")
+        
+    done <<< "$vmware_pids"
+    
+    echo "${vm_count}|${total_cpu}|${total_mem}"
+    echo "$vm_activity" | sed '/^$/d'
 }
 
-# Function to get drive space in GiB and % used for the root volume
-get_drive_space() {
-    # Use df with -g to show GiB and filter root filesystem (/)
-    if ! command -v df >/dev/null 2>&1; then
-        echo "df command unavailable"
-        return
-    fi
-
-    local df_output total used avail percent_used
-    df_output=$(df -g / | tail -1)
-
-    # Example output columns: Filesystem, 512-blocks, Used, Avail, Capacity, iused, ifree, %iused, Mounted on
-    # but with -g we expect: Filesystem, 512-blocks, Used, Avail, Capacity, iused, ifree, %iused, Mounted on
-    # We'll parse the 'Used' and 'Avail' (Gi) and 'Capacity'
-    total=$(echo "$df_output" | awk '{print $2}')
-    used=$(echo "$df_output" | awk '{print $3}')
-    avail=$(echo "$df_output" | awk '{print $4}')
-    percent_used=$(echo "$df_output" | awk '{print $5}' | tr -d '%')
-
-    # Some systems may have capacity with % sign; if parsing fails, fallback
-    if [ -z "$total" ] || [ -z "$used" ] || [ -z "$avail" ]; then
-        echo "Unable to parse disk usage"
-        return
-    fi
-
-    echo "Total: ${total}Gi, Used: ${used}Gi (${percent_used}%), Available: ${avail}Gi"
-}
-
-# Function to get system uptime
-get_uptime() {
-    # 'uptime' output, e.g. "10:15  up  3 days,  2:34, 2 users, load averages: 1.23 1.09 0.88"
-    local raw uptime_str
-    raw=$(uptime)
-    # Extract "up ..." portion
-    uptime_str=$(echo "$raw" | sed 's/.*up *//; s/, *[0-9]* users.*$//')
-    echo "$uptime_str"
-}
-
-# Function to get memory pressure / usage
-get_memory_pressure() {
-    # We can derive "used" vs "total" from vm_stat + page size
-    if ! command -v vm_stat >/dev/null 2>&1; then
-        echo "vm_stat command unavailable"
-        return
-    fi
-
-    local pages_free pages_active pages_inactive pages_speculative pages_wired pages_compressed page_size
-    page_size=$(vm_stat | head -1 | awk '{print $8}' | tr -d '.')
-    pages_free=$(vm_stat | awk '/Pages free/ {print $3}' | tr -d '.')
-    pages_active=$(vm_stat | awk '/Pages active/ {print $3}' | tr -d '.')
-    pages_inactive=$(vm_stat | awk '/Pages inactive/ {print $3}' | tr -d '.')
-    pages_speculative=$(vm_stat | awk '/Pages speculative/ {print $3}' | tr -d '.')
-    pages_wired=$(vm_stat | awk '/Pages wired down/ {print $4}' | tr -d '.')
-    pages_compressed=$(vm_stat | awk '/Pages occupied by compressor/ {print $5}' | tr -d '.')
-
-    local total_pages used_pages
-    total_pages=$((pages_free + pages_active + pages_inactive + pages_speculative + pages_wired + pages_compressed))
-    used_pages=$((total_pages - pages_free))
-
-    local total_mem_gb used_mem_gb used_percent
-    total_mem_gb=$(echo "$total_pages * $page_size / 1024 / 1024 / 1024" | bc -l)
-    used_mem_gb=$(echo "$used_pages * $page_size / 1024 / 1024 / 1024" | bc -l)
-    used_percent=$(echo "scale=2; ($used_pages / $total_pages) * 100" | bc -l)
-
-    printf "Used: %.1fGi (%.1f%%), Total: %.1fGi" "$used_mem_gb" "$used_percent" "$total_mem_gb"
-}
-
-# Function to get CPU temperature
-get_cpu_temp() {
-    # Requires osx-cpu-temp installed via Homebrew
-    if ! command -v osx-cpu-temp >/dev/null 2>&1; then
-        echo "Unavailable (osx-cpu-temp not installed)"
-        return
-    fi
-
-    # osx-cpu-temp output example: "56.8°C"
-    local temp
-    temp=$(osx-cpu-temp 2>/dev/null || true)
-    if [ -z "$temp" ]; then
-        echo "Unavailable"
-    else
-        echo "$temp"
-    fi
-}
-
-# Function to check Time Machine status with fallback
-get_time_machine_status() {
-    # Prefer tmutil when available
-    if command -v tmutil >/dev/null 2>&1; then
-        # Try to get latest backup info
-        local latest_backup
-        latest_backup=$(tmutil latestbackup 2>/dev/null || true)
-        if [ -n "$latest_backup" ]; then
-            local latest_date
-            latest_date=$(tmutil machinedirectory 2>/dev/null || true)
-            echo "Configured; Latest: $(date -r "$(stat -f %m "$latest_backup")" +"%Y-%m-%d %H:%M:%S")"
+# Determine high risk app status
+determine_high_risk() {
+    local vmware_status="$1"
+    local app_inventory="$2"
+    
+    if [[ "$vmware_status" == "Running" ]]; then
+        if echo "$app_inventory" | grep -q "VMware Fusion.*LEGACY"; then
+            echo "VMware Legacy"
             return
         fi
+    fi
+    
+    # Check for other legacy apps
+    local legacy_count=$(echo "$app_inventory" | grep -c "LEGACY" 2>/dev/null || echo "0")
+    if [[ "$legacy_count" -gt 1 ]]; then
+        echo "Multiple Legacy"
+        return
+    elif [[ "$legacy_count" -eq 1 ]]; then
+        echo "VMware Legacy"
+        return
+    fi
+    
+    echo "None"
+}
 
-        # If no latest backup, see if any destinations exist
-        local dest_info
-        dest_info=$(tmutil destinationinfo 2>/dev/null || true)
-        if [ -n "$dest_info" ]; then
-            echo "Configured but no completed backups found"
-            return
+# Get resource hogs (>80% CPU or >4GB RAM)
+get_resource_hogs() {
+    local hogs=""
+    
+    # High CPU processes (>80%)
+    local high_cpu=$(ps aux | awk '$3 > 80.0 {printf "%s (%s): CPU %.1f%%, RAM %.2fGB, User: %s\n", $11, $2, $3, $6/1024/1024, $1}' 2>/dev/null)
+    
+    # High memory processes (>4GB)
+    local high_mem=$(ps aux | awk '$6/1024/1024 > 4.0 {printf "%s (%s): CPU %.1f%%, RAM %.2fGB, User: %s\n", $11, $2, $3, $6/1024/1024, $1}' 2>/dev/null)
+    
+    [[ -n "$high_cpu" ]] && hogs+="$high_cpu"$'\n'
+    [[ -n "$high_mem" ]] && hogs+="$high_mem"$'\n'
+    
+    if [[ -z "$hogs" ]]; then
+        echo "No resource hogs detected"
+    else
+        echo "$hogs" | sed '/^$/d' | sort -u
+    fi
+}
+
+# Generate legacy software flags with detailed explanations
+generate_legacy_flags() {
+    local app_inventory="$1"
+    local vm_activity="$2"
+    local flags=""
+    
+    if echo "$app_inventory" | grep -q "VMware Fusion.*LEGACY"; then
+        local vmware_version=$(echo "$app_inventory" | grep "VMware Fusion" | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+        flags+="VMware Fusion ${vmware_version}: Pre-13.x uses deprecated kernel extensions, known GPU conflicts with Sonoma, incompatible with Metal rendering pipeline."
+        
+        # Add VM-specific warnings
+        if echo "$vm_activity" | grep -q "⚠️"; then
+            local legacy_vms=$(echo "$vm_activity" | grep -c "⚠️" 2>/dev/null || echo "0")
+            flags+=" Running ${legacy_vms} VM(s) with legacy guest OSes."
         fi
+        
+        flags+=" UPGRADE RECOMMENDED to VMware Fusion 13.5+"$'\n'
     fi
-
-    # Fallback: check for Time Machine backup folders in /Volumes
-    local tm_dirs
-    tm_dirs=$(find /Volumes -maxdepth 3 -type d -name "Backups.backupdb" 2>/dev/null || true)
-    if [ -n "$tm_dirs" ]; then
-        echo "Backup folders found, but could not determine latest backup time (consider granting Full Disk Access)."
+    
+    if [[ -z "$flags" ]]; then
+        echo "No legacy software detected"
     else
-        echo "Not configured or no Time Machine backups found"
+        echo "$flags" | sed '/^$/d'
     fi
 }
 
-###############################################################################
-# Airtable API Helper
-###############################################################################
+# Execute user/app monitoring (with error handling)
+user_count_raw=$(get_active_users)
+user_count=$(echo "$user_count_raw" | head -1)
+active_users=$(echo "$user_count_raw" | tail -n +2)
+[[ -z "$active_users" ]] && active_users="No console users"
+[[ -z "$user_count" ]] && user_count=0
 
-send_to_airtable() {
-    local payload="$1"
+app_data=$(get_user_applications)
+total_gui_apps=$(echo "$app_data" | head -1)
+application_inventory=$(echo "$app_data" | tail -n +2)
+[[ -z "$application_inventory" ]] && application_inventory="No applications detected"
+[[ -z "$total_gui_apps" ]] && total_gui_apps=0
 
-    if [ -z "$AIRTABLE_API_KEY" ] || [ -z "$AIRTABLE_BASE_ID" ] || [ -z "$AIRTABLE_TABLE_NAME" ]; then
-        log_error "Airtable environment variables missing. Skipping send."
-        return 1
-    fi
+vmware_status=$(check_vmware_status)
+[[ -z "$vmware_status" ]] && vmware_status="Not Running"
 
-    local url="https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME}"
+vm_data=$(get_vm_details)
+vm_metrics=$(echo "$vm_data" | head -1)
+vm_activity=$(echo "$vm_data" | tail -n +2)
+vm_count=$(echo "$vm_metrics" | cut -d'|' -f1)
+vmware_cpu_percent=$(echo "$vm_metrics" | cut -d'|' -f2)
+vmware_memory_gb=$(echo "$vm_metrics" | cut -d'|' -f3)
+[[ -z "$vm_activity" ]] && vm_activity="No VMs running"
+[[ -z "$vm_count" ]] && vm_count=0
+[[ -z "$vmware_cpu_percent" ]] && vmware_cpu_percent=0
+[[ -z "$vmware_memory_gb" ]] && vmware_memory_gb=0
 
-    log_info "Sending data to Airtable..."
-    local response
-    response=$(curl -sS -X POST "$url" \
-        -H "Authorization: Bearer ${AIRTABLE_API_KEY}" \
-        -H "Content-Type: application/json" \
-        --data "$payload" 2>&1) || {
-            log_error "Failed to send data to Airtable."
-            log_error "curl output: $response"
-            return 1
-        }
+high_risk_apps=$(determine_high_risk "$vmware_status" "$application_inventory")
+[[ -z "$high_risk_apps" ]] && high_risk_apps="None"
 
-    if echo "$response" | grep -q '"error"'; then
-        log_error "Airtable API returned an error:"
-        log_error "$response"
-        return 1
-    fi
+resource_hogs=$(get_resource_hogs)
+[[ -z "$resource_hogs" ]] && resource_hogs="No resource hogs detected"
 
-    log_info "Successfully sent data to Airtable."
-    return 0
-}
+legacy_software_flags=$(generate_legacy_flags "$application_inventory" "$vm_activity")
+[[ -z "$legacy_software_flags" ]] && legacy_software_flags="No legacy software detected"
 
-###############################################################################
-# Collect Metrics
-###############################################################################
-
-log_info "=== Starting iMac health check ==="
-
-TIMESTAMP=$(get_timestamp)
-HOSTNAME=$(get_hostname)
-MACOS_VERSION=$(get_macos_version)
-
-SMART_STATUS=$(get_smart_status)
-KERNEL_PANICS=$(get_kernel_panics)
-SYSTEM_ERRORS=$(get_system_errors)
-DRIVE_SPACE=$(get_drive_space)
-UPTIME=$(get_uptime)
-MEMORY=$(get_memory_pressure)
-CPU_TEMP=$(get_cpu_temp)
-TM_STATUS=$(get_time_machine_status)
-
-log_info "Collected metrics:"
-log_info "Timestamp: $TIMESTAMP"
-log_info "Hostname: $HOSTNAME"
-log_info "macOS Version: $MACOS_VERSION"
-log_info "SMART Status: $SMART_STATUS"
-log_info "Kernel Panics: $KERNEL_PANICS"
-log_info "System Errors: $SYSTEM_ERRORS"
-log_info "Drive Space: $DRIVE_SPACE"
-log_info "Uptime: $UPTIME"
-log_info "Memory Pressure: $MEMORY"
-log_info "CPU Temperature: $CPU_TEMP"
-log_info "Time Machine: $TM_STATUS"
+run_duration_seconds=$SECONDS
 
 ###############################################################################
-# Derive numeric values for Health Score evaluation
+# Build primary JSON payload
 ###############################################################################
-
-# Disk usage: extract percentage from "Total: X, Used: Y (Z%), Available: A"
-PERCENT_USED_NUM=$(echo "$DRIVE_SPACE" | sed -n 's/.*(\([0-9]\+\)%).*/\1/p')
-[ -z "$PERCENT_USED_NUM" ] && PERCENT_USED_NUM=0
-
-# CPU temp: extract numeric part from e.g. "56.8°C"
-CPU_TEMP_NUM=$(echo "$CPU_TEMP" | sed 's/[^0-9.]//g')
-CPU_TEMP_INT=0
-if [ -n "$CPU_TEMP_NUM" ]; then
-    CPU_TEMP_INT=${CPU_TEMP_NUM%.*}
-fi
-
-# System errors: extract "Errors: N, Critical: M (last 1h)"
-ERROR_COUNT_NUM=$(echo "$SYSTEM_ERRORS" | sed -n 's/Errors: \([0-9]\+\).*/\1/p')
-[ -z "$ERROR_COUNT_NUM" ] && ERROR_COUNT_NUM=0
-
-CRITICAL_COUNT_NUM=$(echo "$SYSTEM_ERRORS" | sed -n 's/.*Critical: \([0-9]\+\).*/\1/p')
-[ -z "$CRITICAL_COUNT_NUM" ] && CRITICAL_COUNT_NUM=0
-
-###############################################################################
-# Time Machine - compute days since last backup (if present)
-###############################################################################
-TM_NEEDS_ATTENTION=false
-TM_LAST_BACKUP_DAYS=0
-
-# Extract date like: "Latest: 2025-11-18 05:42:36"
-LATEST_DATE=$(echo "$TM_STATUS" | grep -Eo "[0-9]{4}-[0-9]{2}-[0-9]{2}")
-LATEST_TIME=$(echo "$TM_STATUS" | grep -Eo "[0-9]{2}:[0-9]{2}:[0-9]{2}")
-
-if [ -n "$LATEST_DATE" ] && [ -n "$LATEST_TIME" ]; then
-    LAST_BACKUP_TS=$(date -j -f "%Y-%m-%d %H:%M:%S" "$LATEST_DATE $LATEST_TIME" +%s 2>/dev/null || echo "")
-    if [ -n "$LAST_BACKUP_TS" ]; then
-        NOW_TS=$(date +%s)
-        TM_LAST_BACKUP_DAYS=$(( (NOW_TS - LAST_BACKUP_TS) / 86400 ))
-    fi
-else
-    TM_NEEDS_ATTENTION=true
-fi
-
-###############################################################################
-# Health Score, Severity, and Reasons
-###############################################################################
-
-HEALTH_SCORE="Healthy"
-SEVERITY="Info"
-REASONS=""
-
-# Helper: bump severity from Info -> Warning (but never down)
-bump_to_warning() {
-    if [ "$SEVERITY" = "Info" ]; then
-        SEVERITY="Warning"
-    fi
-}
-
-bump_to_critical() {
-    SEVERITY="Critical"
-}
-
-# SMART status: treat "Not Available" as neutral, anything else as Critical
-if [ "$SMART_STATUS" != "Verified" ] && [ "$SMART_STATUS" != "Not Available" ]; then
-    bump_to_critical
-    REASONS+="SMART status is '$SMART_STATUS'. "
-fi
-
-# Kernel panics in last 24h (always Critical if any)
-if echo "$KERNEL_PANICS" | grep -q "kernel panic-related log entries"; then
-    KERNEL_PANIC_COUNT=$(echo "$KERNEL_PANICS" | grep -Eo '^[0-9]+' | head -n1)
-    if [ -z "$KERNEL_PANIC_COUNT" ]; then
-        KERNEL_PANIC_COUNT=0
-    fi
-    if [ "$KERNEL_PANIC_COUNT" -gt 0 ]; then
-        bump_to_critical
-        REASONS+="Kernel panics in last 24 hours: $KERNEL_PANIC_COUNT. "
-    fi
-fi
-
-# Disk usage thresholds
-if [ "$PERCENT_USED_NUM" -ge 90 ] 2>/dev/null; then
-    bump_to_critical
-    REASONS+="Disk usage ${PERCENT_USED_NUM}% (>= 90%). "
-elif [ "$PERCENT_USED_NUM" -ge 80 ] 2>/dev/null; then
-    bump_to_warning
-    REASONS+="Disk usage ${PERCENT_USED_NUM}% (>= 80%). "
-fi
-
-# CPU temperature thresholds
-if [ "$CPU_TEMP_INT" -ge 85 ] && [ "$CPU_TEMP_INT" -lt 120 ]; then
-    bump_to_critical
-    REASONS+="CPU temp ${CPU_TEMP_INT}°C (>= 85°C). "
-elif [ "$CPU_TEMP_INT" -ge 80 ] && [ "$CPU_TEMP_INT" -lt 85 ]; then
-    bump_to_warning
-    REASONS+="CPU temp ${CPU_TEMP_INT}°C (>= 80°C). "
-fi
-
-# System log errors / criticals
-if [ "$CRITICAL_COUNT_NUM" -gt 0 ]; then
-    bump_to_critical
-    REASONS+="Critical log messages: ${CRITICAL_COUNT_NUM}. "
-fi
-
-if [ "$ERROR_COUNT_NUM" -gt 2000 ]; then
-    bump_to_critical
-    REASONS+="Error count very high (${ERROR_COUNT_NUM}). "
-elif [ "$ERROR_COUNT_NUM" -gt 500 ]; then
-    bump_to_warning
-    REASONS+="Error count elevated (${ERROR_COUNT_NUM}). "
-fi
-
-# Time Machine thresholds
-if [ "$TM_NEEDS_ATTENTION" = true ]; then
-    bump_to_critical
-    REASONS+="Time Machine not configured or destination missing. "
-elif [ "$TM_LAST_BACKUP_DAYS" -ge 7 ]; then
-    bump_to_critical
-    REASONS+="Last Time Machine backup ${TM_LAST_BACKUP_DAYS} days ago (>= 7 days). "
-elif [ "$TM_LAST_BACKUP_DAYS" -ge 3 ]; then
-    bump_to_warning
-    REASONS+="Last Time Machine backup ${TM_LAST_BACKUP_DAYS} days ago (>= 3 days). "
-fi
-
-# Derive Health Score from Severity
-if [ "$SEVERITY" = "Info" ]; then
-    HEALTH_SCORE="Healthy"
-else
-    HEALTH_SCORE="Attention Needed"
-fi
-
-# Friendly default reason
-if [ -z "$REASONS" ]; then
-    if [ "$HEALTH_SCORE" = "Healthy" ]; then
-        REASONS="All checks passed within defined thresholds."
-    else
-        REASONS="Issues detected but not individually described."
-    fi
-fi
-
-log_info "Final Health Score: $HEALTH_SCORE"
-log_info "Severity: $SEVERITY"
-log_info "Reasons: $REASONS"
+JSON_PAYLOAD=$(jq -n \
+  --arg ts "$timestamp" \
+  --arg host "$hostname" \
+  --arg ver "$macos_version" \
+  --arg smart "$smart_status" \
+  --arg kp "$kernel_panics_text" \
+  --arg sys_err "$system_errors_text" \
+  --arg disk "$drive_info" \
+  --arg up "$uptime_val" \
+  --arg mem "$memory_pressure" \
+  --arg cpu "$cpu_temp" \
+  --arg tm "$tm_status" \
+  --arg swu "$software_updates" \
+  --arg severity "$severity" \
+  --arg health "$health_score_label" \
+  --arg reasons "$reasons" \
+  --arg te "$top_errors" \
+  --arg tc "$top_crashes" \
+  --arg gpu_freeze "$gpu_freeze_detected" \
+  --arg gpu_events "$gpu_freeze_events" \
+  --arg active_users "$active_users" \
+  --arg app_inv "$application_inventory" \
+  --arg vmware_stat "$vmware_status" \
+  --arg vm_act "$vm_activity" \
+  --arg high_risk "$high_risk_apps" \
+  --arg res_hogs "$resource_hogs" \
+  --arg legacy_flags "$legacy_software_flags" \
+  --argjson run_duration "$run_duration_seconds" \
+  --argjson ek "$error_kernel_1h" \
+  --argjson ew "$error_windowserver_1h" \
+  --argjson es "$error_spotlight_1h" \
+  --argjson ei "$error_icloud_1h" \
+  --argjson ed "$error_disk_io_1h" \
+  --argjson en "$error_network_1h" \
+  --argjson eg "$error_gpu_1h" \
+  --argjson est "$error_systemstats_1h" \
+  --argjson ep "$error_power_1h" \
+  --argjson cc "$crash_count" \
+  --argjson tt "$thermal_throttles_1h" \
+  --argjson fm "$fan_max_events_1h" \
+  --argjson user_cnt "$user_count" \
+  --argjson app_cnt "$total_gui_apps" \
+  --argjson vm_cnt "$vm_count" \
+  --argjson vmw_cpu "$vmware_cpu_percent" \
+  --argjson vmw_mem "$vmware_memory_gb" \
+  '{fields: {
+      "Run Duration (seconds)": $run_duration,
+      "Timestamp": $ts,
+      "Hostname": $host,
+      "macOS Version": $ver,
+      "SMART Status": $smart,
+      "Kernel Panics": $kp,
+      "System Errors": $sys_err,
+      "Drive Space": $disk,
+      "Uptime": $up,
+      "Memory Pressure": $mem,
+      "CPU Temperature": $cpu,
+      "Time Machine": $tm,
+      "Software Updates": $swu,
+      "Severity": $severity,
+      "Health Score": $health,
+      "Reasons": $reasons,
+      "top_errors": $te,
+      "top_crashes": $tc,
+      "error_kernel_1h": $ek,
+      "error_windowserver_1h": $ew,
+      "error_spotlight_1h": $es,
+      "error_icloud_1h": $ei,
+      "error_disk_io_1h": $ed,
+      "error_network_1h": $en,
+      "error_gpu_1h": $eg,
+      "error_systemstats_1h": $est,
+      "error_power_1h": $ep,
+      "crash_count": $cc,
+      "thermal_throttles_1h": $tt,
+      "GPU Freeze Detected": $gpu_freeze,
+      "GPU Freeze Events": $gpu_events,
+      "fan_max_events_1h": $fm,
+      "Active Users": $active_users,
+      "Application Inventory": $app_inv,
+      "VMware Status": $vmware_stat,
+      "VM Activity": $vm_act,
+      "High Risk Apps": $high_risk,
+      "Resource Hogs": $res_hogs,
+      "Legacy Software Flags": $legacy_flags,
+      "user_count": $user_cnt,
+      "total_gui_apps": $app_cnt,
+      "vm_count": $vm_cnt,
+      "vmware_cpu_percent": $vmw_cpu,
+      "vmware_memory_gb": $vmw_mem
+  }}')
 
 ###############################################################################
-# Build JSON payload for Airtable
+# Build FINAL_PAYLOAD by adding the Raw JSON
 ###############################################################################
-
-# Escape double quotes in text fields for JSON safety
-json_escape() {
-    echo "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read())[1:-1])'
-}
-
-JSON_TIMESTAMP=$(json_escape "$TIMESTAMP")
-JSON_HOSTNAME=$(json_escape "$HOSTNAME")
-JSON_MACOS_VERSION=$(json_escape "$MACOS_VERSION")
-JSON_SMART_STATUS=$(json_escape "$SMART_STATUS")
-JSON_KERNEL_PANICS=$(json_escape "$KERNEL_PANICS")
-JSON_SYSTEM_ERRORS=$(json_escape "$SYSTEM_ERRORS")
-JSON_DRIVE_SPACE=$(json_escape "$DRIVE_SPACE")
-JSON_UPTIME=$(json_escape "$UPTIME")
-JSON_MEMORY=$(json_escape "$MEMORY")
-JSON_CPU_TEMP=$(json_escape "$CPU_TEMP")
-JSON_TM_STATUS=$(json_escape "$TM_STATUS")
-JSON_HEALTH_SCORE=$(json_escape "$HEALTH_SCORE")
-JSON_SEVERITY=$(json_escape "$SEVERITY")
-JSON_REASONS=$(json_escape "$REASONS")
-
-JSON_PAYLOAD=$(cat <<EOF
-{
-  "fields": {
-    "Timestamp": "$JSON_TIMESTAMP",
-    "Hostname": "$JSON_HOSTNAME",
-    "macOS Version": "$JSON_MACOS_VERSION",
-    "SMART Status": "$JSON_SMART_STATUS",
-    "Kernel Panics": "$JSON_KERNEL_PANICS",
-    "System Errors": "$JSON_SYSTEM_ERRORS",
-    "Drive Space": "$JSON_DRIVE_SPACE",
-    "Uptime": "$JSON_UPTIME",
-    "Memory Pressure": "$JSON_MEMORY",
-    "CPU Temperature": "$JSON_CPU_TEMP",
-    "Time Machine": "$JSON_TM_STATUS",
-    "Health Score": "$JSON_HEALTH_SCORE",
-    "Severity": "$JSON_SEVERITY",
-    "Reasons": "$JSON_REASONS"
-  }
-}
-EOF
-)
-
-log_info "JSON payload prepared for Airtable."
+FINAL_PAYLOAD=$(jq -n \
+  --argjson main "$JSON_PAYLOAD" \
+  --arg raw "$JSON_PAYLOAD" \
+  '{fields: ($main.fields + {"Raw JSON": $raw})}')
 
 ###############################################################################
 # Send to Airtable
 ###############################################################################
+TABLE_ENCODED=$(echo "$AIRTABLE_TABLE_NAME" | sed 's/ /%20/g')
 
-if send_to_airtable "$JSON_PAYLOAD"; then
-    log_info "Health data successfully recorded in Airtable."
+RESPONSE=$(curl -s -X POST \
+  "https://api.airtable.com/v0/$AIRTABLE_BASE_ID/$TABLE_ENCODED" \
+  -H "Authorization: Bearer $AIRTABLE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "$FINAL_PAYLOAD")
+
+if echo "$RESPONSE" | grep -q '"id"'; then
+    echo "Airtable Update: SUCCESS"
 else
-    log_error "Failed to record health data in Airtable."
+    echo "Airtable Update: FAILED"
+    echo "$RESPONSE"
 fi
 
-log_info "=== Health check completed ==="
-echo ""
+echo "$FINAL_PAYLOAD"
