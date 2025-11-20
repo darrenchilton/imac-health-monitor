@@ -38,7 +38,23 @@ boot_device=$(diskutil info / 2>/dev/null | awk '/Device Node:/ {print $3}' | se
 smart_status=$(safe_timeout 5 diskutil info "$boot_device" 2>/dev/null | awk -F': *' '/SMART Status/ {print $2}' | xargs)
 [[ -z "$smart_status" ]] && smart_status="Unknown"
 
-kernel_panics=$(safe_timeout 8 log show --predicate 'eventMessage CONTAINS "panic(cpu"' --last 24h 2>/dev/null | wc -l | tr -d ' ')
+###############################################################################
+# FIXED: Kernel Panic Detection - Check actual .panic files, not log strings
+###############################################################################
+panic_files=$(ls -1 /Library/Logs/DiagnosticReports/*.panic 2>/dev/null)
+kernel_panics=0
+
+if [[ -n "$panic_files" ]]; then
+    # Only count panics from last 24 hours
+    cutoff_time=$(date -v-24H +%s 2>/dev/null || date -d "24 hours ago" +%s)
+    while IFS= read -r file; do
+        [[ -z "$file" ]] && continue
+        file_time=$(stat -f "%m" "$file" 2>/dev/null || stat -c "%Y" "$file" 2>/dev/null)
+        if [[ -n "$file_time" && "$file_time" -ge "$cutoff_time" ]]; then
+            ((kernel_panics++))
+        fi
+    done <<< "$panic_files"
+fi
 
 check_tm_age() {
     local path=$(safe_timeout 5 tmutil latestbackup 2>/dev/null)
@@ -53,35 +69,86 @@ tm_age_days=$(check_tm_age)
 software_updates=$(safe_timeout 15 softwareupdate --list 2>&1 | \
     grep -q "No new software available" && echo "Up to Date" || echo "Unknown")
 
-safe_log() { safe_timeout 12 log show --style syslog --last "$1" 2>/dev/null; }
+###############################################################################
+# FIXED: Increased timeout to 5 minutes, added timeout detection
+###############################################################################
+safe_log() { 
+    local timeout_val=300  # 5 minutes max
+    local result
+    result=$(safe_timeout "$timeout_val" log show --style syslog --last "$1" 2>/dev/null)
+    if [[ $? -eq 124 ]]; then
+        echo "LOG_TIMEOUT"
+    else
+        echo "$result"
+    fi
+}
+
 LOG_1H=$(safe_log "1h")
 LOG_5M=$(safe_log "5m")
 
-count_in() { echo "$1" | grep -i "$2" | wc -l | tr -d ' '; }
+# Check for timeout condition
+if [[ "$LOG_1H" == "LOG_TIMEOUT" ]]; then
+    echo "WARNING: 1-hour log collection timed out after 5 minutes"
+    errors_1h=0
+    critical_1h=0
+    error_kernel_1h=0
+    error_windowserver_1h=0
+    error_spotlight_1h=0
+    error_icloud_1h=0
+    error_disk_io_1h=0
+    error_network_1h=0
+    error_gpu_1h=0
+    error_systemstats_1h=0
+    error_power_1h=0
+    thermal_throttles_1h=0
+    fan_max_events_1h=0
+    top_errors="Log collection timed out"
+else
+    ###############################################################################
+    # FIXED: More accurate error counting
+    ###############################################################################
+    # Total error count
+    errors_1h=$(echo "$LOG_1H" | grep -i "error" | wc -l | tr -d ' ')
+    
+    # Critical errors - only count actual fault-level events, ensure it doesn't exceed total
+    critical_1h=$(echo "$LOG_1H" | grep -iE "<Fault>|<Critical>|\[critical\]|\[fatal\]" | wc -l | tr -d ' ')
+    
+    # Sanity check: critical can't exceed total errors
+    if [[ "$critical_1h" -gt "$errors_1h" ]]; then
+        critical_1h=$errors_1h
+    fi
+    
+    ###############################################################################
+    # FIXED: Category-specific errors - require "error" keyword to avoid false positives
+    ###############################################################################
+    error_kernel_1h=$(echo "$LOG_1H" | grep -i "kernel" | grep -iE "error|fail|panic" | wc -l | tr -d ' ')
+    error_windowserver_1h=$(echo "$LOG_1H" | grep -i "WindowServer" | grep -iE "error|fail|crash" | wc -l | tr -d ' ')
+    error_spotlight_1h=$(echo "$LOG_1H" | grep -i "metadata\|spotlight" | grep -iE "error|fail" | wc -l | tr -d ' ')
+    error_icloud_1h=$(echo "$LOG_1H" | grep -iE "icloud|CloudKit" | grep -iE "error|fail|timeout" | wc -l | tr -d ' ')
+    error_disk_io_1h=$(echo "$LOG_1H" | grep -iE "I/O error|disk.*error|read.*fail|write.*fail" | wc -l | tr -d ' ')
+    error_network_1h=$(echo "$LOG_1H" | grep -iE "network|dns|resolver" | grep -iE "error|fail|timeout|unreachable" | wc -l | tr -d ' ')
+    error_gpu_1h=$(echo "$LOG_1H" | grep -iE "GPU|AMDRadeon|Metal" | grep -iE "error|fail|timeout|hang|reset" | wc -l | tr -d ' ')
+    error_systemstats_1h=$(echo "$LOG_1H" | grep -i "systemstats" | grep -iE "error|fail" | wc -l | tr -d ' ')
+    error_power_1h=$(echo "$LOG_1H" | grep -i "powerd" | grep -iE "error|fail|warning" | wc -l | tr -d ' ')
+    
+    thermal_throttles_1h=$(echo "$LOG_1H" | grep -iE "thermal.*throttl|throttl.*thermal|cpu.*throttl" | wc -l | tr -d ' ')
+    fan_max_events_1h=$(echo "$LOG_1H" | grep -iE "fan.*max|fan.*speed.*high|fan.*rpm" | wc -l | tr -d ' ')
+    
+    top_errors=$(echo "$LOG_1H" \
+        | grep -i "error" \
+        | sed 's/.*error/error/i' \
+        | sort | uniq -c | sort -nr | head -3 \
+        | awk '{$1=""; print substr($0,2)}' \
+        | paste -sd " | " -)
+fi
 
-errors_1h=$(count_in "$LOG_1H" "error")
-recent_5m=$(count_in "$LOG_5M" "error")
-critical_1h=$(count_in "$LOG_1H" "fault")
-
-error_kernel_1h=$(count_in "$LOG_1H" "kernel")
-error_windowserver_1h=$(count_in "$LOG_1H" "WindowServer")
-error_spotlight_1h=$(count_in "$LOG_1H" "metadata")
-error_icloud_1h=$(count_in "$LOG_1H" "icloud\|CloudKit")
-error_disk_io_1h=$(count_in "$LOG_1H" "I/O error")
-error_network_1h=$(count_in "$LOG_1H" "network\|dns\|resolver")
-error_gpu_1h=$(count_in "$LOG_1H" "GPU\|AMDRadeon\|Metal")
-error_systemstats_1h=$(count_in "$LOG_1H" "systemstats")
-error_power_1h=$(count_in "$LOG_1H" "powerd")
-
-thermal_throttles_1h=$(count_in "$LOG_1H" "Thermal")
-fan_max_events_1h=$(count_in "$LOG_1H" "fan")
-
-top_errors=$(echo "$LOG_1H" \
-    | grep -i "error" \
-    | sed 's/.*error/error/i' \
-    | sort | uniq -c | sort -nr | head -3 \
-    | awk '{$1=""; print substr($0,2)}' \
-    | paste -sd " | " -)
+# Handle 5-minute log timeout
+if [[ "$LOG_5M" == "LOG_TIMEOUT" ]]; then
+    echo "WARNING: 5-minute log collection timed out"
+    recent_5m=0
+else
+    recent_5m=$(echo "$LOG_5M" | grep -i "error" | wc -l | tr -d ' ')
+fi
 
 # Check for crash reports (multiple file types)
 crash_files=$(ls -1t ~/Library/Logs/DiagnosticReports/*.{crash,ips,panic,diag} 2>/dev/null)
@@ -139,6 +206,7 @@ else
     health_score_label="Healthy"
     reasons="System operating normally"
 fi
+
 ###############################################################################
 # GPU / WindowServer Freeze Detector (last 2 minutes)
 ###############################################################################
