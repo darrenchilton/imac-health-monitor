@@ -1,7 +1,7 @@
 # iMac Health Monitor - Technical Documentation
 
-**Version:** 3.0  
-**Last Updated:** 2025-11-19  
+**Version:** 3.1  
+**Last Updated:** 2025-11-20  
 **Platform:** macOS Sonoma 15.7.2+  
 **Target Hardware:** 2019 iMac 27" with external Thunderbolt 3 boot drive
 
@@ -46,11 +46,12 @@ Bash-based health monitoring system that collects system metrics every 15 minute
 - **Supported devices**: External Thunderbolt SSDs, internal drives
 - **Values**: "Verified" | "Failing" | "Unknown"
 
-#### Kernel Panics
-- **Source**: `log show --predicate 'eventMessage CONTAINS "panic(cpu"'`
-- **Window**: Last 24 hours
-- **Accuracy**: Filters for actual kernel panics vs. generic panic strings
+#### Kernel Panics (IMPROVED in v3.1)
+- **Source**: `.panic` files in `/Library/Logs/DiagnosticReports/`
+- **Window**: Last 24 hours (by file modification time)
+- **Accuracy**: Checks actual panic report files, not log strings
 - **Format**: Text description + count
+- **Note**: Only counts true kernel panics that caused system crashes/reboots
 
 #### CPU Temperature
 - **Source**: `osx-cpu-temp` (Homebrew package)
@@ -71,31 +72,42 @@ Bash-based health monitoring system that collects system metrics every 15 minute
 - **Format**: "Configured; Latest: YYYY-MM-DD"
 - **Permissions**: Works without Full Disk Access (uses filesystem fallback)
 
-### System Logs (Error Analysis)
+### System Logs (Error Analysis) (IMPROVED in v3.1)
 
 #### Collection Windows
-- **1-hour window**: Total error context
+- **1-hour window**: Total error context (max 5-minute timeout)
 - **5-minute window**: Recent activity detection
 - **2-minute window**: GPU freeze detection
 
-#### Error Categories (per hour)
+#### Error Categories (per hour) - IMPROVED ACCURACY
+All error categories now use two-stage filtering to eliminate false positives:
+1. First filter: Identifies relevant subsystem (kernel, network, etc.)
+2. Second filter: Requires actual error keywords (error, fail, timeout, etc.)
+
 ```bash
-error_kernel_1h          # Kernel-level errors
-error_windowserver_1h    # Display server errors
-error_spotlight_1h       # Spotlight/metadata errors
-error_icloud_1h          # Cloud sync errors
-error_disk_io_1h         # Disk I/O errors
-error_network_1h         # Network/DNS errors
-error_gpu_1h             # GPU/graphics errors
-error_systemstats_1h     # System statistics errors
-error_power_1h           # Power management errors
+error_kernel_1h          # Kernel errors (requires "error" or "fail")
+error_windowserver_1h    # Display server errors (requires "error" or "crash")
+error_spotlight_1h       # Spotlight/metadata errors (requires "error" or "fail")
+error_icloud_1h          # Cloud sync errors (requires "error", "fail", or "timeout")
+error_disk_io_1h         # Disk I/O errors (requires "error" or "fail" in I/O context)
+error_network_1h         # Network/DNS errors (requires "error", "fail", "timeout", or "unreachable")
+error_gpu_1h             # GPU/graphics errors (requires "error", "fail", "timeout", "hang", or "reset")
+error_systemstats_1h     # System statistics errors (requires "error" or "fail")
+error_power_1h           # Power management errors (requires "error", "fail", or "warning")
 ```
+
+**Expected ranges (typical healthy system):**
+- Total errors: 100-5,000 per hour
+- Network errors: 10-500 per hour
+- Critical errors: Always ≤ total errors
 
 #### System Errors Field Format
 ```
 Log Activity: <total> errors (<recent> recent, <critical> critical)
-Example: Log Activity: 50662 errors (7781 recent, 1611 critical)
+Example: Log Activity: 342 errors (12 recent, 67 critical)
 ```
+
+**Note:** Critical error count now uses structured log levels (`<Fault>`, `<Critical>`) and includes sanity check to ensure it never exceeds total errors.
 
 #### Top Errors
 - Aggregates most frequent error messages
@@ -156,6 +168,8 @@ Example: Log Activity: 50662 errors (7781 recent, 1611 critical)
 - **Measurement**: Script execution time via `$SECONDS`
 - **Type**: Integer (seconds)
 - **Purpose**: Track monitoring overhead and detect slow runs
+- **Expected**: 300-600 seconds (5-10 minutes) typical
+- **Maximum**: 600 seconds (timeout protection added in v3.1)
 
 ---
 
@@ -203,7 +217,7 @@ if smart_status != "Verified" AND smart_status != "Unknown":
     severity = "Critical"
     health_score = "Attention Needed"
 
-# Kernel panic always critical
+# Kernel panic always critical (now accurate - checks actual .panic files)
 if kernel_panics > 0:
     severity = "Critical"
     health_score = "Attention Needed"
@@ -465,6 +479,19 @@ diskutil info / | grep "Device Node"
 boot_device="disk2"  # Force specific device
 ```
 
+### False Positive Alerts (RESOLVED in v3.1)
+
+**Symptom:** Kernel panic alerts when no crash occurred, or unrealistically high error counts
+
+**Cause:** Previous versions (≤3.0) had detection issues
+
+**Resolution:** 
+Upgrade to v3.1 which includes:
+- Accurate kernel panic detection using actual `.panic` files
+- Two-stage error filtering to eliminate false positives
+- Sanity checks preventing critical > total errors
+- Improved timeout handling to prevent multi-hour runs
+
 ### Missing Crash Reports
 
 **Symptom:** `top_crashes` always empty
@@ -480,8 +507,9 @@ Modern macOS uses `.ips` files, not `.crash` files. The script now checks both.
 
 ## Performance Characteristics
 
-### Execution Time
+### Execution Time (IMPROVED in v3.1)
 - **Typical**: 5-6 minutes (300-360 seconds)
+- **Maximum**: 10 minutes with timeout protection
 - **Breakdown**:
   - Log collection (1h + 5m + 2m windows): ~4-5 minutes
   - GPU freeze detection (2-minute log scan): ~30-60 seconds
@@ -490,8 +518,9 @@ Modern macOS uses `.ips` files, not `.crash` files. The script now checks both.
   - Airtable transmission: ~1-2 seconds
 - **Factors**: Log volume, system load, network latency
 - **Monitored via**: Run Duration field (in seconds)
+- **Timeout Protection**: 5-minute timeout on log collection prevents hangs (NEW in v3.1)
 
-**Note**: The 5-6 minute execution time is primarily due to macOS log collection operations which can be slow when processing large log volumes (40,000+ errors/hour). This is expected behavior and does not impact system responsiveness.
+**Note**: The 5-6 minute execution time is primarily due to macOS log collection operations. Version 3.1 adds timeout protection to prevent the multi-hour hangs that could occur in v3.0 when processing extremely large log volumes.
 
 ### System Impact
 - **CPU**: Negligible (<1% average)
@@ -500,7 +529,7 @@ Modern macOS uses `.ips` files, not `.crash` files. The script now checks both.
 - **Disk I/O**: Read-only log access
 
 ### Scalability
-- **Logs**: Handles 40,000+ errors/hour without degradation
+- **Logs**: Handles large log volumes with timeout protection (v3.1)
 - **Airtable**: No rate limiting issues at 15-minute intervals
 - **Storage**: Log data not persisted locally
 
@@ -526,6 +555,17 @@ Modern macOS uses `.ips` files, not `.crash` files. The script now checks both.
 ---
 
 ## Version History
+
+### v3.1 (2025-11-20) - Accuracy & Reliability Update
+- **FIXED**: Kernel panic false positives - now checks actual `.panic` files instead of log strings
+- **FIXED**: Critical error count could exceed total errors (mathematical impossibility)
+- **FIXED**: Network error explosion (77K-150K false positives) - now requires actual error keywords
+- **FIXED**: All error categories now use two-stage filtering for accuracy
+- **FIXED**: Extreme runtime issues (3+ hour hangs) - added 5-minute timeout protection
+- **IMPROVED**: Thermal throttle detection now more specific
+- **IMPROVED**: Error counting sanity checks ensure data integrity
+- Error counts now reflect actual problems, not normal system activity
+- Run duration consistently under 10 minutes with timeout fallbacks
 
 ### v3.0 (2025-11-19)
 - Added GPU freeze detection with pattern matching
@@ -591,4 +631,4 @@ For issues or questions:
 
 **Maintainer:** Darren Chilton  
 **Hardware:** 2019 iMac 27" (Sonoma 15.7.2, external Thunderbolt SSD)  
-**Last Verified:** 2025-11-19
+**Last Verified:** 2025-11-20
