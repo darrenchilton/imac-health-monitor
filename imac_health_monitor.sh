@@ -421,7 +421,7 @@ get_user_applications() {
             ((total_apps++))
             
             # Try to find app bundle and get version
-            local app_path=$(mdfind "kMDItemKind == 'Application' && kMDItemFSName == '${app}.app'" 2>/dev/null | head -1)
+            local app_path=$(safe_timeout 5 mdfind "kMDItemKind == 'Application' && kMDItemFSName == '${app}.app'" 2>/dev/null | head -1)
             
             if [[ -n "$app_path" ]]; then
                 local version=$(get_app_version "$app_path")
