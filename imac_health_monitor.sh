@@ -165,43 +165,13 @@ else
     error_systemstats_1h=$(echo "$LOG_1H" | grep -i "systemstats" | grep -iE "error|fail" | wc -l | tr -d ' ')
     error_power_1h=$(echo "$LOG_1H" | grep -i "powerd" | grep -iE "error|fail|warning" | wc -l | tr -d ' ')
     
-    ###############################################################################
-    # IMPROVED: Accurate thermal detection using pmset (not log noise)
-    ###############################################################################
-    # Check for actual thermal throttling via pmset
-    thermlog_output=$(pmset -g thermlog 2>/dev/null)
+    # TEMPORARILY DISABLED - pmset hangs, reverting to old method
+    # thermlog_output=$(pmset -g thermlog 2>/dev/null)
     
-    # Initialize as 0 (no throttling)
-    thermal_throttles_1h=0
+    thermal_throttles_1h=$(echo "$LOG_1H" | grep -iE "thermal.*throttl|throttl.*thermal|cpu.*throttl" | wc -l | tr -d ' ')
     thermal_warning_active="No"
     cpu_speed_limit=100
-    
-    # Check for thermal warnings
-    if echo "$thermlog_output" | grep -q "thermal warning level has been recorded"; then
-        # Extract warning level if present
-        thermal_level=$(echo "$thermlog_output" | grep "thermal warning level" | head -1)
-        if ! echo "$thermal_level" | grep -q "No thermal warning"; then
-            thermal_warning_active="Yes"
-            thermal_throttles_1h=1  # Mark as throttled
-        fi
-    fi
-    
-    # Check CPU speed limit (100 = full speed, <100 = throttled)
-    if echo "$thermlog_output" | grep -q "CPU_Speed_Limit"; then
-        cpu_speed_limit=$(echo "$thermlog_output" | grep "CPU_Speed_Limit" | tail -1 | awk '{print $3}')
-        # Validate it's a number
-        if ! [[ "$cpu_speed_limit" =~ ^[0-9]+$ ]]; then
-            cpu_speed_limit=100  # Default to no throttling if parse fails
-        fi
-        # If speed limit is less than 100, system is throttled
-        if [[ "$cpu_speed_limit" -lt 100 ]]; then
-            thermal_throttles_1h=1
-        fi
-    fi
-    
-    # Fan monitoring (still useful but less critical)
-    fan_max_events_1h=$(echo "$LOG_1H" | grep -iE "fan.*max|fan.*speed.*high|fan.*rpm" | wc -l | tr -d ' ')
-    
+    fan_max_events_1h=$(echo "$LOG_1H" | grep -iE "fan.*max|fan.*speed.*high|fan.*rpm" | wc -l | tr -d ' ')    
     top_errors=$(echo "$LOG_1H" \
         | grep -i "error" \
         | sed 's/.*error/error/i' \
