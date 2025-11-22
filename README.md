@@ -1,6 +1,6 @@
 # iMac Health Monitor - Technical Documentation
 
-**Version:** 3.1  
+**Version:** 3.1.1  
 **Last Updated:** 2025-11-22  
 **Platform:** macOS Sonoma 15.7.2+  
 **Target Hardware:** 2019 iMac 27" with external Thunderbolt 3 boot drive
@@ -295,6 +295,14 @@ Example: Log Activity: 50662 errors (7781 recent, 1611 critical)
 - **Purpose**: Track monitoring overhead and detect slow runs
 - **Typical**: 6-7 minutes (360-420 seconds)
 
+#### Thermal Monitoring (IMPROVED in v3.1.1)
+- **Detection Method**: Uses `pmset -g thermlog` for accurate thermal state (not log parsing)
+- **thermal_throttles_1h**: Binary indicator (0 = not throttling, 1 = throttling detected)
+- **Thermal Warning Active**: "Yes" or "No" - has macOS recorded a thermal warning?
+- **CPU Speed Limit**: Percentage (100 = full speed, <100 = throttled)
+- **Purpose**: Detect actual thermal management events, not log noise
+- **Note**: v3.1 used log parsing which produced false positives (2-34 events/hour on idle systems). v3.1.1 uses actual thermal status for accuracy.
+
 ---
 
 ## Health Scoring Algorithm
@@ -400,7 +408,7 @@ if tm_age_days > 7:
 - error_systemstats_1h - precision: 1
 - error_power_1h - precision: 1
 - crash_count - precision: 1
-- thermal_throttles_1h - precision: 1
+- thermal_throttles_1h - precision: 1 (Note: v3.1.1+ uses binary 0/1, not event count)
 - fan_max_events_1h - precision: 1
 
 #### Required Fields - User/App Monitoring (v3.1)
@@ -422,6 +430,16 @@ if tm_age_days > 7:
 - vm_count - precision: 0 (integer)
 - vmware_cpu_percent - precision: 1 (decimal)
 - vmware_memory_gb - precision: 2 (decimals)
+
+#### Required Fields - Thermal Monitoring (v3.1.1)
+
+**Single Select Fields:**
+- Thermal Warning Active: Options = ["No", "Yes"]
+  - Description: Whether macOS has recorded a thermal warning level
+
+**Number Fields (Thermal):**
+- CPU Speed Limit - precision: 0 (integer)
+  - Description: CPU speed as percentage (100 = full speed, <100 = throttled)
 
 #### Formula Fields (Auto-calculated)
 These are READ-ONLY and calculated from base data:
@@ -803,6 +821,15 @@ This data is used solely for system stability correlation analysis. No keystroke
 
 ## Version History
 
+### v3.1.1 (2025-11-22)
+- **FIXED**: Thermal throttling detection now uses `pmset -g thermlog` instead of log parsing
+- Eliminated false positive thermal throttling reports (was showing 2-34 events/hour on idle systems)
+- thermal_throttles_1h changed from event count to binary indicator (0 = not throttling, 1 = throttling)
+- Added "Thermal Warning Active" field (Yes/No) - reports actual macOS thermal warning state
+- Added "CPU Speed Limit" field (percentage) - shows actual CPU speed (100 = full, <100 = throttled)
+- Improved thermal detection accuracy: now reports actual thermal management events only
+- Added 2 new Airtable fields for accurate thermal monitoring
+
 ### v3.1 (2025-11-22)
 - **CRITICAL**: Added lock file mechanism to prevent concurrent execution
 - Added user session tracking (active users, idle time)
@@ -834,21 +861,30 @@ This data is used solely for system stability correlation analysis. No keystroke
 
 ## Use Cases
 
-### Primary Use Case: VMware Correlation Analysis
+### Primary Use Case: VMware Correlation Analysis (ONGOING)
 The v3.1 monitoring additions enable analysis of whether VMware Fusion 12.2.4 with legacy guest operating systems (Mac OS X 10.3 Panther, Windows 7) is causing GPU freezes and system instability on macOS Sonoma.
+
+**Current Status: Data Collection Phase**
+- **Goal**: Collect 2-3 weeks of data with regular VMware usage
+- **Progress**: Insufficient data collected so far (VMware running in <10% of samples)
+- **Needed**: More samples with VMware actively running VMs to establish correlation
+- **Timeline**: Continue monitoring before drawing conclusions
 
 **Analysis Workflow:**
 1. **Collect Data** (2-3 weeks): System automatically records VMware status, running VMs, and GPU errors every 20 minutes
-2. **Create Airtable Views**: Filter by VMware Status = "Running" vs "Not Running"
-3. **Compare Metrics**: Analyze error_gpu_1h, GPU Freeze Detected, and Health Score
-4. **Identify Correlation**: Determine if GPU issues correlate with VMware usage
-5. **Make Decision**: Upgrade to VMware 13.5+, migrate to UTM, or investigate other causes
+2. **Minimum Sample Size**: Need at least 30-50 samples with VMware running VMs for statistical significance
+3. **Create Airtable Views**: Filter by VMware Status = "Running" vs "Not Running"
+4. **Compare Metrics**: Analyze error_gpu_1h, GPU Freeze Detected, and Health Score
+5. **Identify Correlation**: Determine if GPU issues correlate with VMware usage
+6. **Make Decision**: Upgrade to VMware 13.5+, migrate to UTM, or investigate other causes
 
-**Expected Insights:**
+**Expected Insights (After Sufficient Data Collection):**
 - GPU error rate with VMware running vs. not running
 - Which specific VMs (Mac 10.3 vs Windows 7) cause more problems
-- Resource usage patterns when VMs are active
+- Resource usage patterns when VMs are active  
 - Whether migration to modern virtualization is justified
+
+**Note:** Early data (22 samples with only 2 VMware running) is insufficient to draw conclusions. System shows high error rates (19,000+/hour) regardless of VMware status, but this may be due to lack of VMware usage in samples. Continue data collection during periods of active VM usage.
 
 ### Secondary Use Cases
 
@@ -930,9 +966,10 @@ For issues or questions:
 
 **Monitoring Challenges Solved:**
 - Fusion Drive failure and migration to external SSD
-- GPU freeze correlation with legacy virtualization software
+- GPU freeze correlation with legacy virtualization software (ongoing data collection)
 - Concurrent execution resource waste
-- False positive error detection
+- False positive error detection  
+- False positive thermal throttling detection
 - Legacy guest OS stability issues
 
 ---
@@ -940,5 +977,5 @@ For issues or questions:
 **Maintainer:** Darren Chilton  
 **Hardware:** 2019 iMac 27" (Sonoma 15.7.2, external Thunderbolt SSD)  
 **Last Verified:** 2025-11-22  
-**Script Version:** 3.1  
-**Script Lines:** 730+
+**Script Version:** 3.1.1  
+**Script Lines:** 770+
