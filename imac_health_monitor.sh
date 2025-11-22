@@ -133,6 +133,8 @@ if [[ "$LOG_1H" == "LOG_TIMEOUT" ]]; then
     error_systemstats_1h=0
     error_power_1h=0
     thermal_throttles_1h=0
+    thermal_warning_active="No"
+    cpu_speed_limit=100
     fan_max_events_1h=0
     top_errors="Log collection timed out"
 else
@@ -163,7 +165,41 @@ else
     error_systemstats_1h=$(echo "$LOG_1H" | grep -i "systemstats" | grep -iE "error|fail" | wc -l | tr -d ' ')
     error_power_1h=$(echo "$LOG_1H" | grep -i "powerd" | grep -iE "error|fail|warning" | wc -l | tr -d ' ')
     
-    thermal_throttles_1h=$(echo "$LOG_1H" | grep -iE "thermal.*throttl|throttl.*thermal|cpu.*throttl" | wc -l | tr -d ' ')
+    ###############################################################################
+    # IMPROVED: Accurate thermal detection using pmset (not log noise)
+    ###############################################################################
+    # Check for actual thermal throttling via pmset
+    thermlog_output=$(pmset -g thermlog 2>/dev/null)
+    
+    # Initialize as 0 (no throttling)
+    thermal_throttles_1h=0
+    thermal_warning_active="No"
+    cpu_speed_limit=100
+    
+    # Check for thermal warnings
+    if echo "$thermlog_output" | grep -q "thermal warning level has been recorded"; then
+        # Extract warning level if present
+        thermal_level=$(echo "$thermlog_output" | grep "thermal warning level" | head -1)
+        if ! echo "$thermal_level" | grep -q "No thermal warning"; then
+            thermal_warning_active="Yes"
+            thermal_throttles_1h=1  # Mark as throttled
+        fi
+    fi
+    
+    # Check CPU speed limit (100 = full speed, <100 = throttled)
+    if echo "$thermlog_output" | grep -q "CPU_Speed_Limit"; then
+        cpu_speed_limit=$(echo "$thermlog_output" | grep "CPU_Speed_Limit" | tail -1 | awk '{print $3}')
+        # Validate it's a number
+        if ! [[ "$cpu_speed_limit" =~ ^[0-9]+$ ]]; then
+            cpu_speed_limit=100  # Default to no throttling if parse fails
+        fi
+        # If speed limit is less than 100, system is throttled
+        if [[ "$cpu_speed_limit" -lt 100 ]]; then
+            thermal_throttles_1h=1
+        fi
+    fi
+    
+    # Fan monitoring (still useful but less critical)
     fan_max_events_1h=$(echo "$LOG_1H" | grep -iE "fan.*max|fan.*speed.*high|fan.*rpm" | wc -l | tr -d ' ')
     
     top_errors=$(echo "$LOG_1H" \
@@ -637,6 +673,7 @@ JSON_PAYLOAD=$(jq -n \
   --arg high_risk "$high_risk_apps" \
   --arg res_hogs "$resource_hogs" \
   --arg legacy_flags "$legacy_software_flags" \
+  --arg thermal_warn "$thermal_warning_active" \
   --argjson run_duration "$run_duration_seconds" \
   --argjson ek "$error_kernel_1h" \
   --argjson ew "$error_windowserver_1h" \
@@ -650,6 +687,7 @@ JSON_PAYLOAD=$(jq -n \
   --argjson cc "$crash_count" \
   --argjson tt "$thermal_throttles_1h" \
   --argjson fm "$fan_max_events_1h" \
+  --argjson cpu_speed "$cpu_speed_limit" \
   --argjson user_cnt "$user_count" \
   --argjson app_cnt "$total_gui_apps" \
   --argjson vm_cnt "$vm_count" \
@@ -685,6 +723,8 @@ JSON_PAYLOAD=$(jq -n \
       "error_power_1h": $ep,
       "crash_count": $cc,
       "thermal_throttles_1h": $tt,
+      "Thermal Warning Active": $thermal_warn,
+      "CPU Speed Limit": $cpu_speed,
       "GPU Freeze Detected": $gpu_freeze,
       "GPU Freeze Events": $gpu_events,
       "fan_max_events_1h": $fm,
