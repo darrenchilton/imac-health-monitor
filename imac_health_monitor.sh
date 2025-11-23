@@ -58,21 +58,37 @@ safe_timeout() {
     else "$@"; fi
 }
 
+###############################################################################
+# DEBUG LOGGING - Track which operation is running
+###############################################################################
+DEBUG_LOG="$SCRIPT_DIR/.debug_log.txt"
+debug_log() {
+    echo "[$(date '+%H:%M:%S')] $1" >> "$DEBUG_LOG"
+}
+
+# Clear old debug log and start fresh
+> "$DEBUG_LOG"
+debug_log "=== SCRIPT START ==="
+
 # FIXED: Use ISO 8601 format for timestamp
 timestamp=$(date -u "+%Y-%m-%dT%H:%M:%SZ")
+debug_log "Getting hostname and macOS version"
 hostname=$(hostname)
 macos_version=$(sw_vers -productVersion)
 
 # Get the actual boot disk device (e.g., disk2s1 -> disk2)
+debug_log "Detecting boot device"
 boot_device=$(diskutil info / 2>/dev/null | awk '/Device Node:/ {print $3}' | sed 's/s[0-9]*$//')
 [[ -z "$boot_device" ]] && boot_device="disk0"  # Fallback to disk0 if detection fails
 
+debug_log "Checking SMART status for $boot_device"
 smart_status=$(safe_timeout 5 diskutil info "$boot_device" 2>/dev/null | awk -F': *' '/SMART Status/ {print $2}' | xargs)
 [[ -z "$smart_status" ]] && smart_status="Unknown"
 
 ###############################################################################
 # FIXED: Kernel Panic Detection - Check actual .panic files, not log strings
 ###############################################################################
+debug_log "Checking for kernel panic files"
 panic_files=$(ls -1 /Library/Logs/DiagnosticReports/*.panic 2>/dev/null)
 kernel_panics=0
 
@@ -88,6 +104,7 @@ if [[ -n "$panic_files" ]]; then
     done <<< "$panic_files"
 fi
 
+debug_log "Checking Time Machine backup age"
 check_tm_age() {
     local path=$(safe_timeout 5 tmutil latestbackup 2>/dev/null)
     [[ -z "$path" ]] && echo "-1" && return
@@ -98,12 +115,14 @@ check_tm_age() {
 }
 tm_age_days=$(check_tm_age)
 
+debug_log "Checking for software updates"
 software_updates=$(safe_timeout 15 softwareupdate --list 2>&1 | \
     grep -q "No new software available" && echo "Up to Date" || echo "Unknown")
 
 ###############################################################################
 # FIXED: Increased timeout to 5 minutes, added timeout detection
 ###############################################################################
+debug_log "Starting log collection (1h window) - this may take 3-5 minutes"
 safe_log() { 
     local timeout_val=300  # 5 minutes max
     local result
@@ -115,8 +134,13 @@ safe_log() {
     fi
 }
 
+debug_log "Collecting 1-hour log window"
 LOG_1H=$(safe_log "1h")
+debug_log "Finished 1-hour log collection"
+
+debug_log "Collecting 5-minute log window"
 LOG_5M=$(safe_log "5m")
+debug_log "Finished 5-minute log collection"
 
 # Check for timeout condition
 if [[ "$LOG_1H" == "LOG_TIMEOUT" ]]; then
@@ -189,14 +213,18 @@ else
 fi
 
 # Check for crash reports (multiple file types)
+debug_log "Checking for crash reports"
 crash_files=$(ls -1t ~/Library/Logs/DiagnosticReports/*.{crash,ips,panic,diag} 2>/dev/null)
 crash_count=$(echo "$crash_files" | grep -v '^$' | wc -l | tr -d ' ')
 top_crashes=$(echo "$crash_files" | head -3 | sed 's/.*\///' | paste -sd "," -)
 
 # FIXED: Calculate additional metrics - check the actual boot data volume
+debug_log "Checking drive space"
 drive_info=$(df -h /System/Volumes/Data 2>/dev/null | awk 'NR==2 {printf "Total: %s, Used: %s (%s), Available: %s", $2, $3, $5, $4}')
 # Fallback to root if Data volume not found
 [[ -z "$drive_info" ]] && drive_info=$(df -h / | awk 'NR==2 {printf "Total: %s, Used: %s (%s), Available: %s", $2, $3, $5, $4}')
+
+debug_log "Getting system info (uptime, memory, CPU temp)"
 uptime_val=$(uptime | awk '{print $3,$4}' | sed 's/,$//')
 memory_pressure=$(memory_pressure 2>/dev/null | grep "System-wide memory free percentage:" | awk '{print $5}' || echo "N/A")
 cpu_temp=$(osx-cpu-temp 2>/dev/null || echo "N/A")
@@ -248,6 +276,7 @@ fi
 ###############################################################################
 # GPU / WindowServer Freeze Detector (last 2 minutes)
 ###############################################################################
+debug_log "Checking for GPU freeze patterns (2-minute window)"
 gpu_freeze_patterns=(
     "GPU Reset"
     "GPU Hang"
@@ -576,22 +605,33 @@ generate_legacy_flags() {
 }
 
 # Execute user/app monitoring (with error handling)
+debug_log "START: User/app monitoring"
+debug_log "  - Getting active users"
 user_count_raw=$(get_active_users)
+debug_log "  - Finished getting active users"
+
 user_count=$(echo "$user_count_raw" | head -1)
 active_users=$(echo "$user_count_raw" | tail -n +2)
 [[ -z "$active_users" ]] && active_users="No console users"
 [[ -z "$user_count" ]] && user_count=0
 
+debug_log "  - Getting user applications (THIS MAY BE SLOW)"
 app_data=$(get_user_applications)
+debug_log "  - Finished getting user applications"
+
 total_gui_apps=$(echo "$app_data" | head -1)
 application_inventory=$(echo "$app_data" | tail -n +2)
 [[ -z "$application_inventory" ]] && application_inventory="No applications detected"
 [[ -z "$total_gui_apps" ]] && total_gui_apps=0
 
+debug_log "  - Checking VMware status"
 vmware_status=$(check_vmware_status)
+debug_log "  - Finished VMware status check"
 [[ -z "$vmware_status" ]] && vmware_status="Not Running"
 
+debug_log "  - Getting VM details"
 vm_data=$(get_vm_details)
+debug_log "  - Finished getting VM details"
 vm_metrics=$(echo "$vm_data" | head -1)
 vm_activity=$(echo "$vm_data" | tail -n +2)
 vm_count=$(echo "$vm_metrics" | cut -d'|' -f1)
@@ -605,17 +645,25 @@ vmware_memory_gb=$(echo "$vm_metrics" | cut -d'|' -f3)
 high_risk_apps=$(determine_high_risk "$vmware_status" "$application_inventory")
 [[ -z "$high_risk_apps" ]] && high_risk_apps="None"
 
+debug_log "  - Getting resource hogs"
 resource_hogs=$(get_resource_hogs)
+debug_log "  - Finished getting resource hogs"
 [[ -z "$resource_hogs" ]] && resource_hogs="No resource hogs detected"
 
+debug_log "  - Generating legacy software flags"
 legacy_software_flags=$(generate_legacy_flags "$application_inventory" "$vm_activity")
 [[ -z "$legacy_software_flags" ]] && legacy_software_flags="No legacy software detected"
+debug_log "END: User/app monitoring complete"
 
 run_duration_seconds=$SECONDS
+
+# Capture debug log for Airtable
+DEBUG_LOG_CONTENT=$(cat "$DEBUG_LOG" 2>/dev/null || echo "Debug log unavailable")
 
 ###############################################################################
 # Build primary JSON payload
 ###############################################################################
+debug_log "Building JSON payload"
 JSON_PAYLOAD=$(jq -n \
   --arg ts "$timestamp" \
   --arg host "$hostname" \
@@ -643,6 +691,7 @@ JSON_PAYLOAD=$(jq -n \
   --arg high_risk "$high_risk_apps" \
   --arg res_hogs "$resource_hogs" \
   --arg legacy_flags "$legacy_software_flags" \
+  --arg debug_log "$DEBUG_LOG_CONTENT" \
   --arg thermal_warn "$thermal_warning_active" \
   --argjson run_duration "$run_duration_seconds" \
   --argjson ek "$error_kernel_1h" \
@@ -705,6 +754,7 @@ JSON_PAYLOAD=$(jq -n \
       "High Risk Apps": $high_risk,
       "Resource Hogs": $res_hogs,
       "Legacy Software Flags": $legacy_flags,
+      "Debug Log": $debug_log,
       "user_count": $user_cnt,
       "total_gui_apps": $app_cnt,
       "vm_count": $vm_cnt,
@@ -723,6 +773,7 @@ FINAL_PAYLOAD=$(jq -n \
 ###############################################################################
 # Send to Airtable
 ###############################################################################
+debug_log "Finished JSON construction, sending to Airtable"
 TABLE_ENCODED=$(echo "$AIRTABLE_TABLE_NAME" | sed 's/ /%20/g')
 
 RESPONSE=$(curl -s -X POST \
@@ -732,10 +783,15 @@ RESPONSE=$(curl -s -X POST \
   -d "$FINAL_PAYLOAD")
 
 if echo "$RESPONSE" | grep -q '"id"'; then
+    debug_log "Airtable upload: SUCCESS"
     echo "Airtable Update: SUCCESS"
 else
+    debug_log "Airtable upload: FAILED"
     echo "Airtable Update: FAILED"
     echo "$RESPONSE"
 fi
+
+debug_log "=== SCRIPT END (duration: ${run_duration_seconds}s) ==="
+echo "Debug log saved to: $DEBUG_LOG"
 
 echo "$FINAL_PAYLOAD"
