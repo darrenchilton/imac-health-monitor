@@ -1,7 +1,7 @@
 # iMac Health Monitor - Technical Documentation
 
-**Version:** 3.1.1  
-**Last Updated:** 2025-11-22  
+**Version:** 3.1.2  
+**Last Updated:** 2025-11-25  
 **Platform:** macOS Sonoma 15.7.2+  
 **Target Hardware:** 2019 iMac 27" with external Thunderbolt 3 boot drive
 
@@ -15,7 +15,7 @@ Bash-based health monitoring system that collects system metrics every 20 minute
 ### Components
 ```
 /Users/slavicanikolic/Documents/imac-health-monitor/
-├── imac_health_monitor.sh          # Main monitoring script (v3.1)
+├── imac_health_monitor.sh          # Main monitoring script (v3.1.2)
 ├── bin/
 │   └── run_imac_health_monitor.sh  # LaunchAgent wrapper
 ├── .env                             # Environment configuration
@@ -40,7 +40,20 @@ Bash-based health monitoring system that collects system metrics every 20 minute
 
 ---
 
-## What's New in v3.1
+## What's New in v3.1.2
+
+### Memory Pressure Calculation Fix (DATA QUALITY FIX)
+- **Problem**: Memory Pressure field was storing memory **free** percentage (93% = good), causing confusion
+- **Solution**: Inverted calculation to show actual memory **pressure** (7% = low pressure, good)
+- **Impact**: Matches Activity Monitor's pressure graph (low numbers = healthy system)
+- **Breaking Change**: Historical data shows inverted values (requires one-time Airtable correction)
+- **Interpretation**: 
+  - **Before**: 93% looked high but meant "93% free" (confusing)
+  - **After**: 7% correctly shows "7% pressure" (intuitive)
+
+---
+
+## What's New in v3.1.1
 
 ### Lock File Protection (CRITICAL FIX)
 - **Problem**: Script execution time (5-7 minutes) could overlap with 15-minute LaunchAgent interval
@@ -273,10 +286,17 @@ Example: Log Activity: 50662 errors (7781 recent, 1611 critical)
 
 ### System Info
 
-#### Memory Pressure
-- **Source**: `memory_pressure` command
-- **Metric**: System-wide memory free percentage
-- **Format**: Percentage string (e.g., "93%")
+#### Memory Pressure (UPDATED in v3.1.2)
+- **Source**: `memory_pressure` command (inverted calculation)
+- **Metric**: Actual memory pressure percentage (100 - memory_free%)
+- **Format**: Percentage string (e.g., "7%")
+- **Interpretation**: 
+  - **Low (0-20%)**: Healthy, plenty of free RAM
+  - **Medium (21-50%)**: Moderate usage, still comfortable
+  - **High (51-80%)**: Heavy memory use, may see compression/swapping
+  - **Critical (81-100%)**: System under severe memory pressure
+- **Note**: On systems with 72GB RAM, expect 5-15% under normal load
+- **Breaking Change**: v3.1.2+ inverted from previous "memory free %" reporting
 
 #### Uptime
 - **Source**: `uptime` command
@@ -743,6 +763,30 @@ grep -n "get_active_users" ~/Documents/imac-health-monitor/imac_health_monitor.s
 # Should show line number where function exists
 ```
 
+### Memory Pressure Shows Wrong Values (v3.1.2)
+
+**Symptom:** Memory Pressure still shows 93% instead of 7%
+
+**Check script version:**
+```bash
+head -20 ~/Documents/imac-health-monitor/imac_health_monitor.sh | grep "Version:"
+# Should show v3.1.2 or higher
+```
+
+**Verify inversion code:**
+```bash
+grep -A 3 "memory_free=" ~/Documents/imac-health-monitor/imac_health_monitor.sh
+# Should show calculation: memory_pressure="$((100 - memory_free))%"
+```
+
+**Test manually:**
+```bash
+memory_free=$(memory_pressure | grep "System-wide" | awk '{ print $5 }' | sed 's/%//')
+echo "Memory Free: ${memory_free}%"
+echo "Memory Pressure: $((100 - memory_free))%"
+# Should show ~93% free, ~7% pressure
+```
+
 ---
 
 ## Performance Characteristics
@@ -820,6 +864,15 @@ This data is used solely for system stability correlation analysis. No keystroke
 ---
 
 ## Version History
+
+### v3.1.2 (2025-11-25)
+- **FIXED**: Memory Pressure now reports actual pressure percentage (inverted from memory free %)
+- Changed calculation from reporting "memory free %" to "memory pressure %"
+- Memory Pressure field now shows intuitive values (7% = low pressure, healthy)
+- **Breaking Change**: Historical data shows inverted values (93% free → 7% pressure)
+- Improved field interpretation to match Activity Monitor's pressure graph
+- Added detailed documentation on memory pressure interpretation
+- **Data Migration Required**: One-time Airtable correction needed for historical records
 
 ### v3.1.1 (2025-11-22)
 - **FIXED**: Thermal throttling detection now uses `pmset -g thermlog` instead of log parsing
@@ -970,12 +1023,13 @@ For issues or questions:
 - Concurrent execution resource waste
 - False positive error detection  
 - False positive thermal throttling detection
+- Memory pressure reporting clarity (inverted calculation)
 - Legacy guest OS stability issues
 
 ---
 
 **Maintainer:** Darren Chilton  
 **Hardware:** 2019 iMac 27" (Sonoma 15.7.2, external Thunderbolt SSD)  
-**Last Verified:** 2025-11-22  
-**Script Version:** 3.1.1  
+**Last Verified:** 2025-11-25  
+**Script Version:** 3.1.2  
 **Script Lines:** 770+
