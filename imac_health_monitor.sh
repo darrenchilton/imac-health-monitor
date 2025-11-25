@@ -226,7 +226,9 @@ drive_info=$(df -h /System/Volumes/Data 2>/dev/null | awk 'NR==2 {printf "Total:
 
 debug_log "Getting system info (uptime, memory, CPU temp)"
 uptime_val=$(uptime | awk '{print $3,$4}' | sed 's/,$//')
-memory_pressure=$(memory_pressure 2>/dev/null | grep "System-wide memory free percentage:" | awk '{print $5}' || echo "N/A")
+# Get memory free percentage and invert it to show actual pressure
+memory_free=$(memory_pressure | grep "System-wide" | awk '{ print $5 }' | sed 's/%//')
+memory_pressure="$((100 - memory_free))%"
 cpu_temp=$(osx-cpu-temp 2>/dev/null || echo "N/A")
 
 # FIXED: Format Kernel Panics text
