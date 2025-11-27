@@ -1,6 +1,6 @@
 #!/bin/bash
 ###############################################################################
-# iMac Health Monitor v3.2.0
+# iMac Health Monitor v3.2.1
 # Last Updated: 2025-11-27
 # 
 # CHANGELOG v3.2.0:
@@ -10,6 +10,9 @@
 # - NEW: Thresholds calibrated for macOS Sonoma 15.7.2 normal behavior
 # - IMPROVED: Health scoring logic prioritizes hardware failures and kernel panics
 # - DOCUMENTED: Threshold values based on mean + standard deviations
+# CHANGELOG v3.2.1:
+# - NEW: VM State field showing Idle/Light Activity/Moderate Activity/Active
+# - IMPROVED: Better visibility into actual VM usage vs just "Running"
 ###############################################################################
 SECONDS=0
 
@@ -690,6 +693,27 @@ vm_metrics=$(echo "$vm_data" | head -1)
 vm_activity=$(echo "$vm_data" | tail -n +2)
 vm_count=$(echo "$vm_metrics" | cut -d'|' -f1)
 vmware_cpu_percent=$(echo "$vm_metrics" | cut -d'|' -f2)
+###############################################################################
+# VM STATE CLASSIFICATION - Based on CPU usage pattern
+###############################################################################
+
+if [[ "$vmware_status" == "Running" ]]; then
+    # Convert CPU to integer for comparison (handles "2.2" → "2")
+    cpu_int=$(echo "$vmware_cpu_percent" | cut -d. -f1)
+    
+    # Classify based on CPU usage
+    if [[ "$vmware_cpu_percent" == "0.0" ]]; then
+        vm_state="Idle"
+    elif [[ "$cpu_int" -lt 1 ]]; then
+        vm_state="Light Activity"
+    elif [[ "$cpu_int" -lt 10 ]]; then
+        vm_state="Moderate Activity"
+    else
+        vm_state="Active"
+    fi
+else
+    vm_state="Not Running"
+fi
 vmware_memory_gb=$(echo "$vm_metrics" | cut -d'|' -f3)
 [[ -z "$vm_activity" ]] && vm_activity="No VMs running"
 [[ -z "$vm_count" ]] && vm_count=0
@@ -804,6 +828,7 @@ JSON_PAYLOAD=$(jq -n \
       "Active Users": $active_users,
       "Application Inventory": $app_inv,
       "VMware Status": $vmware_stat,
+      "VM State": "$vm_state",
       "VM Activity": $vm_act,
       "High Risk Apps": $high_risk,
       "Resource Hogs": $res_hogs,
