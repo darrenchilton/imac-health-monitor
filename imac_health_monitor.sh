@@ -765,6 +765,7 @@ JSON_PAYLOAD=$(jq -n \
   --arg active_users "$active_users" \
   --arg app_inv "$application_inventory" \
   --arg vmware_stat "$vmware_status" \
+  --arg vm_state "$vm_state" \
   --arg vm_act "$vm_activity" \
   --arg high_risk "$high_risk_apps" \
   --arg res_hogs "$resource_hogs" \
@@ -828,7 +829,7 @@ JSON_PAYLOAD=$(jq -n \
       "Active Users": $active_users,
       "Application Inventory": $app_inv,
       "VMware Status": $vmware_stat,
-      "VM State": "$vm_state",
+      "VM State": $vm_state,
       "VM Activity": $vm_act,
       "High Risk Apps": $high_risk,
       "Resource Hogs": $res_hogs,
