@@ -1,4 +1,16 @@
 #!/bin/bash
+###############################################################################
+# iMac Health Monitor v3.2.0
+# Last Updated: 2025-11-27
+# 
+# CHANGELOG v3.2.0:
+# - FIXED: Adjusted error thresholds based on 281-sample statistical analysis
+# - FIXED: Eliminated false "Critical" alerts (was 100%, now ~2.5% expected)
+# - NEW: Three-tier health scoring (Healthy/Warning/Critical) with proper baselines
+# - NEW: Thresholds calibrated for macOS Sonoma 15.7.2 normal behavior
+# - IMPROVED: Health scoring logic prioritizes hardware failures and kernel panics
+# - DOCUMENTED: Threshold values based on mean + standard deviations
+###############################################################################
 SECONDS=0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -34,6 +46,24 @@ echo $$ > "$LOCK_FILE"
 
 # Ensure lock file is removed on exit
 trap "rm -f '$LOCK_FILE'" EXIT INT TERM
+
+###############################################################################
+# ERROR THRESHOLDS - Based on statistical analysis of 281 samples (Nov 2025)
+# These thresholds are calibrated for macOS Sonoma 15.7.2 normal behavior
+# Average observed: 25,537 errors/hour, 2,454 errors/5min
+###############################################################################
+
+# Total Errors (1-hour window) - Mean + standard deviations
+ERROR_1H_WARNING=75635      # 2σ above mean (95th percentile)
+ERROR_1H_CRITICAL=100684    # 3σ above mean (99.7th percentile)
+
+# Recent Errors (5-minute window) - Mean + standard deviations  
+ERROR_5M_WARNING=10872      # 2σ above mean (95th percentile)
+ERROR_5M_CRITICAL=15081     # 3σ above mean (99.7th percentile)
+
+# Critical fault thresholds (stricter - these are actual system faults)
+CRITICAL_FAULT_WARNING=50   # More than 50 critical faults/hour is unusual
+CRITICAL_FAULT_CRITICAL=100 # More than 100 critical faults/hour is serious
 
 # Load .env
 ENV_PATH="$SCRIPT_DIR/.env"
@@ -252,27 +282,54 @@ elif [[ "$tm_age_days" -eq 0 ]]; then
 fi
 
 # FIXED: Determine severity and health score based on error analysis
-# Key insight: Compare recent (5m) vs total (1h) errors to detect active vs resolved issues
-if [[ "$recent_5m" -gt 50 ]]; then
+# Uses statistically-derived thresholds from 281-sample baseline (Nov 2025)
+# Strategy: Look for anomalies (deviations from normal) rather than absolute counts
+
+# Initialize with healthy defaults
+severity="Info"
+health_score_label="Healthy"
+reasons="System operating normally"
+
+# Check for actual critical hardware/system failures first (always override)
+if [[ "$smart_status" != "Verified" && "$smart_status" != "Unknown" ]]; then
+    severity="Critical"
+    health_score_label="Hardware Failure"
+    reasons="SMART status: ${smart_status} - Drive failure imminent"
+elif [[ "$kernel_panics" -gt 0 ]]; then
+    severity="Critical"
+    health_score_label="System Instability"
+    reasons="Kernel panic detected (${kernel_panics} in last 24h) - System crashed"
+# Check for critical error bursts (3σ above normal = 99.7% confidence of anomaly)
+elif [[ "$recent_5m" -ge "$ERROR_5M_CRITICAL" ]] || [[ "$errors_1h" -ge "$ERROR_1H_CRITICAL" ]]; then
     severity="Critical"
     health_score_label="Attention Needed"
-    reasons="Active error burst detected (${recent_5m} errors in last 5 min)"
-elif [[ "$recent_5m" -gt 20 ]]; then
-    severity="Warning"
+    reasons="Severe error burst detected (1h: ${errors_1h}, 5m: ${recent_5m}) - Significantly above normal"
+elif [[ "$critical_1h" -ge "$CRITICAL_FAULT_CRITICAL" ]]; then
+    severity="Critical"
     health_score_label="Attention Needed"
-    reasons="Elevated recent errors (${recent_5m} errors in last 5 min)"
-elif [[ "$errors_1h" -gt 200 && "$recent_5m" -lt 10 ]]; then
-    severity="Info"
-    health_score_label="Healthy"
-    reasons="Historical errors present but currently resolved (${errors_1h} total, ${recent_5m} recent)"
-elif [[ "$critical_1h" -gt 10 ]]; then
+    reasons="Excessive critical faults (${critical_1h}/hour) - System subsystems failing"
+# Check for warning-level activity (2σ above normal = 95% confidence of unusual activity)
+elif [[ "$recent_5m" -ge "$ERROR_5M_WARNING" ]] || [[ "$errors_1h" -ge "$ERROR_1H_WARNING" ]]; then
     severity="Warning"
-    health_score_label="Attention Needed"
-    reasons="Elevated critical errors (${critical_1h} faults in last hour)"
-else
-    severity="Info"
-    health_score_label="Healthy"
-    reasons="System operating normally"
+    health_score_label="Monitor Closely"
+    reasons="Elevated error activity (1h: ${errors_1h}, 5m: ${recent_5m}) - Above normal baseline"
+elif [[ "$critical_1h" -ge "$CRITICAL_FAULT_WARNING" ]]; then
+    severity="Warning"
+    health_score_label="Monitor Closely"
+    reasons="Elevated critical faults (${critical_1h}/hour) - Higher than typical"
+fi
+
+# Time Machine backup age check (separate from error analysis)
+if [[ "$tm_age_days" -gt 7 ]]; then
+    if [[ "$severity" == "Info" ]]; then
+        severity="Warning"
+        health_score_label="Backup Overdue"
+    fi
+    if [[ "$reasons" == "System operating normally" ]]; then
+        reasons="Time Machine backup overdue (${tm_age_days} days)"
+    else
+        reasons="${reasons}; Time Machine backup overdue (${tm_age_days} days)"
+    fi
 fi
 
 ###############################################################################
@@ -315,11 +372,6 @@ fi
 if [ -z "$gpu_freeze_detected" ]; then
     gpu_freeze_detected="No"
 fi
-
-# FIXED: Adjust for hardware issues
-[[ "$smart_status" != "Verified" && "$smart_status" != "Unknown" ]] && severity="Critical" && health_score_label="Attention Needed" && reasons="SMART status: ${smart_status}"
-[[ "$kernel_panics" -gt 0 ]] && severity="Critical" && health_score_label="Attention Needed" && reasons="Kernel panic detected"
-[[ "$tm_age_days" -gt 7 ]] && severity="Warning" && health_score_label="Attention Needed" && reasons="${reasons}; Time Machine backup overdue (${tm_age_days} days)"
 
 ###############################################################################
 # USER AND APPLICATION MONITORING
