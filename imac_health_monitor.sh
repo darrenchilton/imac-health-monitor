@@ -397,7 +397,7 @@ get_active_users() {
         ((count++))
         
         # Get idle time from 'w' command
-        local idle=$(w -h "$user" 2>/dev/null | grep "console" | awk '{print $4}' | head -1)
+        local idle=$(w -h "$user" 2>/dev/null | grep "console" | awk '{print $5}' | head -1)
         [[ -z "$idle" ]] && idle="active"
         
         users_info+="${user} (console, idle ${idle})"$'\n'
