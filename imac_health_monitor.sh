@@ -14,11 +14,13 @@
 # - NEW: VM State field showing Idle/Light Activity/Moderate Activity/Active
 # - IMPROVED: Better visibility into actual VM usage vs just "Running"
 # CHANGELOG v3.2.2:
-# - FIXED: Active Users idle detection was reading wrong column from 'w' command
-# - FIXED: Was showing login time (e.g. "Fri13") instead of actual idle time
-# - IMPROVED: Now correctly reads IDLE column (field 5) instead of LOGIN@ (field 4)
-# - IMPROVED: Enhanced idle detection to handle dash (-), zero (0), and empty values
-# - Now shows: "active" when user is active, or actual idle time (5s, 3m, 1:45, etc.)
+# - FIXED: Active Users idle detection completely rewritten to use ioreg
+# - FIXED: Previous version used 'w' command which only tracks terminal activity, not GUI
+# - FIXED: Was showing "6days" idle even when user was actively using the computer
+# - NEW: Now uses ioreg -c IOHIDSystem to track actual keyboard/mouse/trackpad activity
+# - IMPROVED: Accurately detects GUI activity instead of just terminal sessions
+# - IMPROVED: Formats idle time in human-readable format (5s, 3m, 1:45, 2days)
+# - IMPROVED: Treats anything under 5 seconds as "active" to avoid showing brief pauses
 ###############################################################################
 SECONDS=0
 
