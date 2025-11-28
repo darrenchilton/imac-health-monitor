@@ -402,12 +402,34 @@ get_active_users() {
         [[ -z "$user" ]] && continue
         ((count++))
         
-        # Get idle time from 'w' command - Use field 5 (IDLE), not field 4 (LOGIN@)
-        local idle=$(w -h "$user" 2>/dev/null | grep "console" | awk '{print $5}' | head -1)
+        # Get ACTUAL idle time on macOS using ioreg (tracks keyboard/mouse/trackpad input)
+        # This returns idle time in nanoseconds since last HID (Human Interface Device) activity
+        local idle_ns=$(ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print $NF/1000000000; exit}')
         
-        # If empty, dash, or zero - user is active
-        if [[ -z "$idle" ]] || [[ "$idle" == "-" ]] || [[ "$idle" == "0" ]]; then
-            idle="active"
+        if [[ -n "$idle_ns" ]]; then
+            local idle_seconds=$(printf "%.0f" "$idle_ns")
+            
+            # Format idle time in human-readable format
+            if [[ $idle_seconds -lt 60 ]]; then
+                idle="${idle_seconds}s"
+            elif [[ $idle_seconds -lt 3600 ]]; then
+                idle="$((idle_seconds / 60))m"
+            elif [[ $idle_seconds -lt 86400 ]]; then
+                local hours=$((idle_seconds / 3600))
+                local mins=$(((idle_seconds % 3600) / 60))
+                idle="${hours}:$(printf "%02d" $mins)"
+            else
+                local days=$((idle_seconds / 86400))
+                idle="${days}days"
+            fi
+            
+            # Consider anything under 5 seconds as "active"
+            if [[ $idle_seconds -lt 5 ]]; then
+                idle="active"
+            fi
+        else
+            # Fallback if ioreg fails
+            idle="unknown"
         fi
         
         users_info+="${user} (console, idle ${idle})"$'\n'
