@@ -20,7 +20,7 @@
 # - NEW: Now uses ioreg -c IOHIDSystem to track actual keyboard/mouse/trackpad activity
 # - IMPROVED: Accurately detects GUI activity instead of just terminal sessions
 # - IMPROVED: Formats idle time in human-readable format (5s, 3m, 1:45, 2days)
-# - IMPROVED: Treats anything under 5 seconds as "active" to avoid showing brief pauses
+# - IMPROVED: Treats anything under 5 seconds as "active" to avoid showing brief pauses 
 ###############################################################################
 SECONDS=0
 
