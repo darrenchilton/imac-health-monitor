@@ -1,7 +1,7 @@
 #!/bin/bash
 ###############################################################################
-# iMac Health Monitor v3.2.1
-# Last Updated: 2025-11-27
+# iMac Health Monitor v3.2.2
+# Last Updated: 2025-11-28
 # 
 # CHANGELOG v3.2.0:
 # - FIXED: Adjusted error thresholds based on 281-sample statistical analysis
@@ -13,6 +13,12 @@
 # CHANGELOG v3.2.1:
 # - NEW: VM State field showing Idle/Light Activity/Moderate Activity/Active
 # - IMPROVED: Better visibility into actual VM usage vs just "Running"
+# CHANGELOG v3.2.2:
+# - FIXED: Active Users idle detection was reading wrong column from 'w' command
+# - FIXED: Was showing login time (e.g. "Fri13") instead of actual idle time
+# - IMPROVED: Now correctly reads IDLE column (field 5) instead of LOGIN@ (field 4)
+# - IMPROVED: Enhanced idle detection to handle dash (-), zero (0), and empty values
+# - Now shows: "active" when user is active, or actual idle time (5s, 3m, 1:45, etc.)
 ###############################################################################
 SECONDS=0
 
