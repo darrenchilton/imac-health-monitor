@@ -396,9 +396,13 @@ get_active_users() {
         [[ -z "$user" ]] && continue
         ((count++))
         
-        # Get idle time from 'w' command
+        # Get idle time from 'w' command - Use field 5 (IDLE), not field 4 (LOGIN@)
         local idle=$(w -h "$user" 2>/dev/null | grep "console" | awk '{print $5}' | head -1)
-        [[ -z "$idle" ]] && idle="active"
+        
+        # If empty, dash, or zero - user is active
+        if [[ -z "$idle" ]] || [[ "$idle" == "-" ]] || [[ "$idle" == "0" ]]; then
+            idle="active"
+        fi
         
         users_info+="${user} (console, idle ${idle})"$'\n'
     done <<< "$user_list"
@@ -406,7 +410,6 @@ get_active_users() {
     echo "$count"  # Return count for user_count field
     echo "$users_info" | sed '/^$/d'  # Return formatted text
 }
-
 # Get app version safely
 get_app_version() {
     local app_path="$1"
