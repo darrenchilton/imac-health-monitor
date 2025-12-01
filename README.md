@@ -511,6 +511,17 @@ This data is used solely for system stability correlation analysis. No keystroke
 ---
 
 ## Version History
+v3.2.3 (2025-12-01) — GUI App Detection Rewrite
+
+CHANGED: Replaced AppleScript/System Events–based GUI app detection with a fast, reliable ps scan of processes inside *.app/Contents/MacOS/*.
+
+FIXED: Eliminates false "No GUI apps detected" for active sessions (e.g., Finder, Chrome, Mail, pCloud).
+
+FIXED: Removes dependence on Accessibility permissions, System Events timeouts, and AppleScript instability on macOS Sonoma.
+
+IMPROVED: Application Inventory now consistently captures real running GUI apps for each console user.
+
+IMPROVED: Maintains version lookup + ⚠️ LEGACY flag detection using existing logic.
 
 ### v3.2.0 (2025-11-27) 🎯 MAJOR UPDATE
 - **FIXED**: Adjusted error thresholds based on 281-sample statistical analysis
