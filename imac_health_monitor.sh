@@ -479,65 +479,93 @@ check_legacy_status() {
 }
 
 # Get running GUI applications per user
+# Get running GUI applications per user (ps-based, no AppleScript / System Events)
 get_user_applications() {
     local app_inventory=""
     local total_apps=0
-    local user_list=$(who | grep "console" | awk '{print $1}' | sort -u)
-    
+    local user_list
+    user_list=$(who | grep "console" | awk '{print $1}' | sort -u)
+
     if [[ -z "$user_list" ]]; then
         echo "0"
         echo "No users logged in"
         return
     fi
-    
+
+    # Single snapshot of all GUI-ish processes for performance.
+    # We treat anything running from *.app/Contents/MacOS/* as a GUI app.
+    local apps_all
+    apps_all=$(ps aux 2>/dev/null | awk '/\.app\/Contents\/MacOS\// {printf "%s|%s\n",$1,$11}')
+
+    # If for some reason this is empty, don't pretend the system is healthy/idle –
+    # just report detection failure for transparency.
+    if [[ -z "$apps_all" ]]; then
+        while IFS= read -r user; do
+            [[ -z "$user" ]] && continue
+            app_inventory+="[${user}] Unable to detect GUI apps (ps scan empty)"$'\n'
+        done <<< "$user_list"
+        echo "0"
+        echo "$app_inventory" | sed '/^$/d'
+        return
+    fi
+
     while IFS= read -r user; do
         [[ -z "$user" ]] && continue
-        
-        local user_id=$(id -u "$user" 2>/dev/null)
-        [[ -z "$user_id" ]] && continue
-        
-        # Get GUI apps for this user using osascript
-        local apps=$(sudo -u "$user" osascript -e 'tell application "System Events" to get name of every process whose background only is false' 2>/dev/null | tr ',' '\n' | sed 's/^ *//')
-        
-        if [[ -z "$apps" ]]; then
+
+        # Get all GUI app command paths for this user
+        local user_cmds
+        user_cmds=$(echo "$apps_all" | awk -F'|' -v u="$user" '$1 == u {print $2}' | sort -u)
+
+        if [[ -z "$user_cmds" ]]; then
             app_inventory+="[${user}] No GUI apps detected"$'\n'
             continue
         fi
-        
+
         local user_apps=""
-        while IFS= read -r app; do
-            [[ -z "$app" ]] && continue
+        while IFS= read -r cmd_path; do
+            [[ -z "$cmd_path" ]] && continue
             ((total_apps++))
-            
-            # Try to find app bundle and get version
-            local app_path=$(safe_timeout 5 mdfind "kMDItemKind == 'Application' && kMDItemFSName == '${app}.app'" 2>/dev/null | head -1)
-            
+
+            # Extract app bundle name from path:
+            # /.../Some App.app/Contents/MacOS/Some App  →  Some App
+            local app_bundle app_name
+            app_bundle="${cmd_path%/Contents/MacOS/*}"
+            app_name="${app_bundle##*/}"
+            app_name="${app_name%.app}"
+
+            # Try to find the .app bundle so we can read its version
+            local app_path
+            app_path=$(safe_timeout 5 mdfind "kMDItemKind == 'Application' && kMDItemFSName == '${app_name}.app'" 2>/dev/null | head -1)
+
             if [[ -n "$app_path" ]]; then
-                local version=$(get_app_version "$app_path")
-                local legacy_flag=$(check_legacy_status "$app" "$version")
-                
+                local version legacy_flag
+                version=$(get_app_version "$app_path")
+                legacy_flag=$(check_legacy_status "$app_name" "$version")
+
                 if [[ -n "$version" ]]; then
-                    user_apps+="${app} ${version}"
+                    user_apps+="${app_name} ${version}"
                 else
-                    user_apps+="${app}"
+                    user_apps+="${app_name}"
                 fi
-                
+
                 [[ -n "$legacy_flag" ]] && user_apps+=" ${legacy_flag}"
                 user_apps+=", "
             else
-                user_apps+="${app}, "
+                # Fallback: just show the app name
+                user_apps+="${app_name}, "
             fi
-        done <<< "$apps"
-        
-        # Clean up trailing comma
+        done <<< "$user_cmds"
+
+        # Trim trailing comma + space
         user_apps=$(echo "$user_apps" | sed 's/, $//')
         app_inventory+="[${user}] ${user_apps}"$'\n'
-        
+
     done <<< "$user_list"
-    
+
     echo "$total_apps"
     echo "$app_inventory" | sed '/^$/d'
 }
+
 
 # Check VMware status and get VM details
 check_vmware_status() {
