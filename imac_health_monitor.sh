@@ -1,27 +1,63 @@
 #!/bin/bash
 ###############################################################################
-# iMac Health Monitor v3.2.2
-# Last Updated: 2025-11-28
-# 
-# CHANGELOG v3.2.0:
-# - FIXED: Adjusted error thresholds based on 281-sample statistical analysis
-# - FIXED: Eliminated false "Critical" alerts (was 100%, now ~2.5% expected)
-# - NEW: Three-tier health scoring (Healthy/Warning/Critical) with proper baselines
-# - NEW: Thresholds calibrated for macOS Sonoma 15.7.2 normal behavior
-# - IMPROVED: Health scoring logic prioritizes hardware failures and kernel panics
-# - DOCUMENTED: Threshold values based on mean + standard deviations
-# CHANGELOG v3.2.1:
-# - NEW: VM State field showing Idle/Light Activity/Moderate Activity/Active
-# - IMPROVED: Better visibility into actual VM usage vs just "Running"
+# iMac Health Monitor v3.2.3
+# Last Updated: 2025-12-01
+#
+# CHANGELOG v3.2.3:
+# - CHANGED: Replaced AppleScript/System Events GUI app detection with a
+#   process-based scanner using ps to detect apps running from
+#   *.app/Contents/MacOS/.
+# - FIXED: Eliminates false "No GUI apps detected" for active users, including
+#   Finder, Chrome, Mail, pCloud, etc.
+# - IMPROVED: App detection now independent of Accessibility permissions,
+#   System Events responsiveness, and AppleScript failures on Sonoma.
+# - IMPROVED: Still supports version extraction and ⚠️ LEGACY flags.
+#
 # CHANGELOG v3.2.2:
-# - FIXED: Active Users idle detection completely rewritten to use ioreg
-# - FIXED: Previous version used 'w' command which only tracks terminal activity, not GUI
-# - FIXED: Was showing "6days" idle even when user was actively using the computer
-# - NEW: Now uses ioreg -c IOHIDSystem to track actual keyboard/mouse/trackpad activity
-# - IMPROVED: Accurately detects GUI activity instead of just terminal sessions
-# - IMPROVED: Formats idle time in human-readable format (5s, 3m, 1:45, 2days)
-# - IMPROVED: Treats anything under 5 seconds as "active" to avoid showing brief pauses
+# - FIXED: Active user idle-time tracking rewritten to use IOHIDSystem via ioreg.
+#   Corrects cases where user appeared idle for "6days" while actively using the Mac.
+# - NEW: Human-readable idle time formatting (5s, 3m, 1:45, 2days).
+# - IMPROVED: Detects true GUI input; treats <5s idle as "active".
+#
+# CHANGELOG v3.2.1:
+# - NEW: VM State field with runtime classification:
+#   Idle / Light Activity / Moderate Activity / Active / Not Running.
+# - IMPROVED: VMware CPU usage is now used to classify guest OS activity level.
+#
+# CHANGELOG v3.2.0:
+# - FIXED: Recalibrated error thresholds using 281-sample statistical analysis.
+# - NEW: Three-tier health scoring (Healthy / Warning / Critical).
+# - NEW: Thresholds based on mean + 2σ (Warning) and +3σ (Critical).
+# - IMPROVED: Prioritizes hardware failures and kernel panics.
+# - VALIDATED: Sonoma baseline ~25,537 errors/hour; false Critical alerts resolved.
+#
+# CHANGELOG v3.1.2:
+# - FIXED: Memory Pressure now reports actual pressure %, not free %.
+# - BREAKING: Historical values inverted relative to new logic.
+#
+# CHANGELOG v3.1.1:
+# - NEW: PID-based lock file prevents overlapping executions.
+# - FIXED: Thermal throttling detection overhauled; eliminated false positives.
+# - NEW: CPU speed limit and thermal warning fields.
+# - ADDED: Multi-format crash detection (.crash, .ips, .panic, .diag).
+# - ADDED: User session, GUI app inventory, VMware details, legacy software flags.
+#
+# CHANGELOG v3.1.0:
+# - ADDED: Extensive user/app/VM/legacy/resource monitoring subsystem.
+# - ADDED: Resource hog detection (>80% CPU or >4GB RAM).
+# - ADDED: High-risk app classification (VMware Legacy, Multiple Legacy).
+#
+# CHANGELOG v3.0:
+# - NEW: GPU freeze detection system (2-minute window).
+# - NEW: Run duration tracking and Raw JSON payload storage.
+# - FIXED: Boot device auto-detection for external SSDs.
+#
+# CHANGELOG v2.2 and earlier:
+# - Improved subsystem-specific error parsing.
+# - Added burst detection and noise-filtering logic.
+# - Added mathematical sanity checks for log anomalies.
 ###############################################################################
+
 SECONDS=0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
