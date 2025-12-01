@@ -705,8 +705,10 @@ vmware_memory_gb=$(echo "$vm_metrics" | cut -d'|' -f3)
 
 # VM STATE CLASSIFICATION - Based on CPU usage pattern (hardened)
 if [[ "$vmware_status" == "Running" ]]; then
+    # Normalize CPU percent to a safe integer (handles "2.2", "0", "0\n0", etc.)
     cpu_raw="${vmware_cpu_percent:-0}"
     cpu_int=$(to_int "${cpu_raw%%.*}")
+
     if [[ "$cpu_int" -eq 0 ]]; then
         vm_state="Idle"
     elif [[ "$cpu_int" -lt 1 ]]; then
@@ -734,7 +736,7 @@ debug_log "  - Finished getting resource hogs"
 [[ -z "$resource_hogs" ]] && resource_hogs="No resource hogs detected"
 
 debug_log "  - Generating legacy software flags"
-legacy_software_flags=$(generate_legacy_flags("$application_inventory" "$vm_activity"))
+legacy_software_flags=$(generate_legacy_flags "$application_inventory" "$vm_activity")
 [[ -z "$legacy_software_flags" ]] && legacy_software_flags="No legacy software detected"
 debug_log "END: User/app monitoring complete"
 
