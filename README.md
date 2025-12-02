@@ -463,9 +463,9 @@ The monitoring system requires these fields in your Airtable base:
     <key>StartInterval</key>
     <integer>1200</integer>
     <key>StandardOutPath</key>
-    <string>/Users/slavicanikolic/Library/Logs/imac-health-monitor.out.log</string>
+    <string>/Users/slavicanikolic/Library/Logs/imac_health_monitor.launchd.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/slavicanikolic/Library/Logs/imac-health-monitor.err.log</string>
+    <string>/Users/slavicanikolic/Library/Logs/imac_health_monitor.launchd.err</string>
     <key>RunAtLoad</key>
     <true/>
 </dict>
@@ -476,6 +476,99 @@ The monitoring system requires these fields in your Airtable base:
 
 ## Troubleshooting
 
+### Quick Debugging Commands Reference
+
+**Check if monitoring is running:**
+```bash
+launchctl list | grep slavica
+# Should show both agents with exit code 0
+```
+
+**View recent logs:**
+```bash
+# Standard output (last 50 lines)
+tail -50 ~/Library/Logs/imac_health_monitor.launchd.log
+
+# Error log (last 50 lines)
+tail -50 ~/Library/Logs/imac_health_monitor.launchd.err
+
+# Debug log (execution trace)
+cat ~/Documents/imac-health-monitor/.debug_log.txt
+```
+
+**Clear logs (for clean monitoring):**
+```bash
+> ~/Library/Logs/imac_health_monitor.launchd.log
+> ~/Library/Logs/imac_health_monitor.launchd.err
+```
+
+**Stop monitoring:**
+```bash
+# Stop health monitor
+launchctl unload ~/Library/LaunchAgents/com.slavicany.imac-health-monitor.plist
+
+# Stop auto-updater
+launchctl unload ~/Library/LaunchAgents/com.slavicanikolic.imac-health-updater.plist
+```
+
+**Start monitoring:**
+```bash
+# Start health monitor
+launchctl load ~/Library/LaunchAgents/com.slavicany.imac-health-monitor.plist
+
+# Start auto-updater
+launchctl load ~/Library/LaunchAgents/com.slavicanikolic.imac-health-updater.plist
+```
+
+**Force a run now:**
+```bash
+launchctl start com.slavicany.imac-health-monitor
+```
+
+**Remove stale lock file:**
+```bash
+rm ~/Documents/imac-health-monitor/.health_monitor.lock
+```
+
+**Test script manually:**
+```bash
+cd ~/Documents/imac-health-monitor
+./imac_health_monitor.sh
+# Should complete in 1-3 minutes with "Airtable Update: SUCCESS"
+```
+
+**Check for syntax errors:**
+```bash
+bash -n ~/Documents/imac-health-monitor/imac_health_monitor.sh
+# Should return nothing if clean
+```
+
+**Check git status (for auto-updater issues):**
+```bash
+cd ~/Documents/imac-health-monitor
+git status
+# Should show "nothing to commit, working tree clean"
+```
+
+**Fix git issues blocking auto-updater:**
+```bash
+cd ~/Documents/imac-health-monitor
+git stash  # Save local changes
+git pull --rebase  # Get latest from GitHub
+```
+
+**View script version:**
+```bash
+head -5 ~/Documents/imac-health-monitor/imac_health_monitor.sh
+```
+
+**Check when last run completed:**
+```bash
+stat -f "%Sm" ~/Documents/imac-health-monitor/.debug_log.txt
+```
+
+---
+
 ### Common Issues
 
 #### Script Always Shows "Critical"
@@ -485,10 +578,10 @@ The monitoring system requires these fields in your Airtable base:
 #### LaunchAgent Not Running
 ```bash
 # Check if loaded
-launchctl list | grep imac-health
+launchctl list | grep slavica
 
 # Check for errors
-cat ~/Library/Logs/imac-health-monitor.err.log
+tail -50 ~/Library/Logs/imac_health_monitor.launchd.err
 
 # Reload agent
 launchctl unload ~/Library/LaunchAgents/com.slavicany.imac-health-monitor.plist
