@@ -1,7 +1,7 @@
 # iMac Health Monitor - Technical Documentation
 
-**Version:** 3.2.0  
-**Last Updated:** 2025-11-27  
+**Version:** 3.2.3  
+**Last Updated:** 2025-12-01  
 **Platform:** macOS Sonoma 15.7.2+  
 **Target Hardware:** 2019 iMac 27" with external Thunderbolt 3 boot drive
 
@@ -15,11 +15,12 @@ Bash-based health monitoring system that collects system metrics every 20 minute
 ### Components
 ```
 /Users/slavicanikolic/Documents/imac-health-monitor/
-├── imac_health_monitor.sh          # Main monitoring script (v3.2.0)
+├── imac_health_monitor.sh          # Main monitoring script (v3.2.3)
 ├── bin/
 │   └── run_imac_health_monitor.sh  # LaunchAgent wrapper
 ├── .env                             # Environment configuration
 ├── .health_monitor.lock             # PID-based lock file (created during execution)
+├── .debug_log.txt                   # Execution debug log (created during execution)
 ├── LaunchAgent plists:
 │   ├── com.slavicany.imac-health-monitor.plist (interval: 1200s)
 │   └── com.slavicanikolic.imac-health-updater.plist
@@ -36,7 +37,53 @@ Bash-based health monitoring system that collects system metrics every 20 minute
 7. **JSON Payload Construction** (jq with 40+ fields)
 8. **Airtable Transmission** (curl POST)
 9. **Lock File Cleanup** (automatic via trap)
-10. **Logging** (stdout/stderr to LaunchAgent logs)
+10. **Logging** (stdout/stderr to LaunchAgent logs + debug log)
+
+---
+
+## What's New in v3.2.3
+
+### Process-Based Application Detection (RELIABILITY FIX)
+- **Problem**: AppleScript/System Events method failed to detect GUI apps, showing "No GUI apps detected" even when apps were running (Finder, Chrome, Mail, pCloud, etc.)
+- **Root Cause**: System Events unresponsive on Sonoma, Accessibility permissions issues, AppleScript failures in multi-user sessions
+- **Solution**: Replaced with process-based scanner using `ps` to detect apps running from `*.app/Contents/MacOS/`
+- **Impact**: 
+  - Reliable app detection independent of Accessibility permissions
+  - Works consistently across single/dual user sessions
+  - No longer dependent on System Events responsiveness
+  - Still supports version extraction and ⚠️ LEGACY software flagging
+- **Performance**: ~7 seconds vs. 60-120 seconds with AppleScript
+- **Example Output**: Now correctly detects `Finder 15.5, pCloud Drive 3.15, Mail 16.0, Google Chrome 142.0`
+
+---
+
+## What's New in v3.2.2
+
+### Accurate Idle Time Tracking (DATA QUALITY FIX)
+- **Problem**: User idle time showed "6days" while actively using the Mac
+- **Root Cause**: Previous method (`w` command) showed time since last SSH connection, not actual GUI activity
+- **Solution**: Rewritten to use IOHIDSystem via `ioreg` for true GUI input detection
+- **New Features**:
+  - Human-readable formatting: `5s`, `3m`, `1:45`, `2days` instead of raw seconds
+  - Treats <5 seconds idle as "active" (prevents flickering between active/idle)
+  - Accurate tracking of keyboard/mouse/trackpad input
+- **Impact**: Idle time now reflects actual user activity, not last remote login
+- **Example**: User actively typing → shows `active` or `12s`, not `6days`
+
+---
+
+## What's New in v3.2.1
+
+### VM Activity State Classification
+- **New Field**: `VM State` with runtime classification based on CPU usage
+- **Activity Levels**:
+  - **Not Running**: No VMs active
+  - **Idle**: VM running but CPU < 5%
+  - **Light Activity**: VM CPU 5-25%
+  - **Moderate Activity**: VM CPU 25-50%
+  - **Active**: VM CPU > 50%
+- **Purpose**: Quickly identify VM workload without analyzing raw CPU numbers
+- **Example**: "Light Activity" indicates VM is running but not under load
 
 ---
 
@@ -523,6 +570,18 @@ IMPROVED: Application Inventory now consistently captures real running GUI apps 
 
 IMPROVED: Maintains version lookup + ⚠️ LEGACY flag detection using existing logic.
 
+### v3.2.2 (2025-12-01)
+- **FIXED**: Active user idle-time tracking rewritten to use IOHIDSystem via `ioreg`
+- Corrects cases where user appeared "idle 6days" while actively using the Mac
+- **NEW**: Human-readable idle time formatting (5s, 3m, 1:45, 2days)
+- **IMPROVED**: Detects true GUI keyboard/mouse/trackpad input
+- Treats <5 seconds idle as "active" to prevent flickering
+
+### v3.2.1 (2025-12-01)
+- **NEW**: VM State field with runtime classification (Idle/Light/Moderate/Active/Not Running)
+- **IMPROVED**: VMware CPU usage now used to classify guest OS activity level
+- Provides quick visibility into VM workload without analyzing raw numbers
+
 ### v3.2.0 (2025-11-27) 🎯 MAJOR UPDATE
 - **FIXED**: Adjusted error thresholds based on 281-sample statistical analysis
 - **FIXED**: Eliminated false "Critical" alerts (was 100%, now ~2.5% expected)
@@ -727,7 +786,7 @@ For issues or questions:
 
 **Maintainer:** Darren Chilton  
 **Hardware:** 2019 iMac 27" (Sonoma 15.7.2, external Thunderbolt SSD)  
-**Last Verified:** 2025-11-27  
-**Script Version:** 3.2.0  
-**Script Lines:** 840+  
+**Last Verified:** 2025-12-01  
+**Script Version:** 3.2.3  
+**Script Lines:** 950+  
 **Analysis:** 281 samples, 99%+ statistical confidence
