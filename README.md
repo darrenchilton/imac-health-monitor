@@ -1,8 +1,11 @@
 # iMac Health Monitor - Technical Documentation
 
-**Version:** 3.2.0  
-**Last Updated:** 2025-11-27  
-**Platform:** macOS Sonoma 15.7.2+  
+**Version:** 3.2.3
+
+**Last Updated:** 2025-12-02
+
+**Platform:** macOS Sonoma 15.7.2+
+
 **Target Hardware:** 2019 iMac 27" with external Thunderbolt 3 boot drive
 
 ---
