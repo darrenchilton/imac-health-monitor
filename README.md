@@ -43,6 +43,32 @@ Bash-based health monitoring system that collects system metrics every 20 minute
 
 ---
 
+## What's New in v3.2.3
+
+### System Modifications Log (DOCUMENTATION ENHANCEMENT)
+- **Added**: New "System Modifications Log" section to track all debugging actions and configuration changes
+- **Purpose**: Document troubleshooting investigations, root cause analysis, and system changes over time
+- **Format**: Structured entries with Issue → Investigation → Changes → Evidence → Testing protocol
+- **First Entry**: Messages.app wake freeze investigation (2025-12-02)
+  - Identified CoreAudio resume operations blocking WindowServer during wake from sleep
+  - Disabled Messages notification sounds to prevent audio stream resume during wake
+  - Added comprehensive testing protocol with diagnostic commands
+
+### Messages Wake Freeze Fix
+- **Problem**: GUI freezing after wake from sleep (Terminal still functional = WindowServer hang)
+- **Root Cause**: Messages.app attempting CoreAudio audio stream resume during wake
+- **Solution**: Disabled Messages notification sounds (Settings → General → "Play sound effects")
+- **Context**: Known macOS Sonoma bug with external Thunderbolt 3 boot drives
+- **Status**: Testing in progress (requires 5-10+ successful wake cycles for verification)
+
+### Documentation Improvements
+- Added detailed testing protocol for wake freeze troubleshooting
+- Added diagnostic log commands for future debugging
+- Updated version to 3.2.3 and last updated date to 2025-12-02
+- Improved header formatting for readability in both markdown and plain text
+
+---
+
 ## What's New in v3.2.0
 
 ### Statistical Threshold Calibration (CRITICAL FIX)
@@ -526,6 +552,14 @@ IMPROVED: Application Inventory now consistently captures real running GUI apps 
 
 IMPROVED: Maintains version lookup + ⚠️ LEGACY flag detection using existing logic.
 
+### v3.2.3 (2025-12-02) 📖 DOCUMENTATION UPDATE
+- **NEW**: Added "System Modifications Log" section for tracking troubleshooting and system changes
+- **DOCUMENTED**: Messages.app wake freeze investigation and fix (CoreAudio/notification sounds issue)
+- **ADDED**: Comprehensive testing protocol for wake freeze troubleshooting
+- **ADDED**: Diagnostic log commands for future debugging (Messages, WindowServer, CoreAudio)
+- **IMPROVED**: Header formatting for better readability in both markdown and plain text
+- **UPDATED**: Documentation version and last updated date
+
 ### v3.2.0 (2025-11-27) 🎯 MAJOR UPDATE
 - **FIXED**: Adjusted error thresholds based on 281-sample statistical analysis
 - **FIXED**: Eliminated false "Critical" alerts (was 100%, now ~2.5% expected)
@@ -816,6 +850,7 @@ For issues or questions:
 - ✅ Memory pressure reporting clarity (inverted calculation)
 - ✅ Sleep prevention for continuous monitoring
 - ✅ Statistical baseline establishment for macOS Sonoma log volume
+- ✅ Messages.app wake freeze investigation (v3.2.3 - CoreAudio/notification sounds issue)
 
 **Key Learnings:**
 - macOS Sonoma generates 25K+ log entries/hour under normal operation (not errors)
@@ -823,12 +858,13 @@ For issues or questions:
 - Mean + 2σ/3σ methodology effectively identifies true anomalies
 - VMware Fusion 12.2.4 stable on macOS Sonoma with legacy guest OSes
 - System health monitoring requires calibration to actual system behavior
+- External Thunderbolt 3 boot drives + Messages notification sounds can cause wake freezes
 
 ---
 
 **Maintainer:** Darren Chilton  
 **Hardware:** 2019 iMac 27" (Sonoma 15.7.2, external Thunderbolt SSD)  
-**Last Verified:** 2025-11-27  
-**Script Version:** 3.2.0  
+**Last Verified:** 2025-12-02  
+**Script Version:** 3.2.3  
 **Script Lines:** 840+  
 **Analysis:** 281 samples, 99%+ statistical confidence
