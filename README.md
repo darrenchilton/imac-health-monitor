@@ -1,7 +1,7 @@
 # iMac Health Monitor - Technical Documentation
 
-**Version:** 3.2.3  
-**Last Updated:** 2025-12-01  
+**Version:** 3.2.0  
+**Last Updated:** 2025-11-27  
 **Platform:** macOS Sonoma 15.7.2+  
 **Target Hardware:** 2019 iMac 27" with external Thunderbolt 3 boot drive
 
@@ -15,12 +15,11 @@ Bash-based health monitoring system that collects system metrics every 20 minute
 ### Components
 ```
 /Users/slavicanikolic/Documents/imac-health-monitor/
-├── imac_health_monitor.sh          # Main monitoring script (v3.2.3)
+├── imac_health_monitor.sh          # Main monitoring script (v3.2.0)
 ├── bin/
 │   └── run_imac_health_monitor.sh  # LaunchAgent wrapper
 ├── .env                             # Environment configuration
 ├── .health_monitor.lock             # PID-based lock file (created during execution)
-├── .debug_log.txt                   # Execution debug log (created during execution)
 ├── LaunchAgent plists:
 │   ├── com.slavicany.imac-health-monitor.plist (interval: 1200s)
 │   └── com.slavicanikolic.imac-health-updater.plist
@@ -37,53 +36,7 @@ Bash-based health monitoring system that collects system metrics every 20 minute
 7. **JSON Payload Construction** (jq with 40+ fields)
 8. **Airtable Transmission** (curl POST)
 9. **Lock File Cleanup** (automatic via trap)
-10. **Logging** (stdout/stderr to LaunchAgent logs + debug log)
-
----
-
-## What's New in v3.2.3
-
-### Process-Based Application Detection (RELIABILITY FIX)
-- **Problem**: AppleScript/System Events method failed to detect GUI apps, showing "No GUI apps detected" even when apps were running (Finder, Chrome, Mail, pCloud, etc.)
-- **Root Cause**: System Events unresponsive on Sonoma, Accessibility permissions issues, AppleScript failures in multi-user sessions
-- **Solution**: Replaced with process-based scanner using `ps` to detect apps running from `*.app/Contents/MacOS/`
-- **Impact**: 
-  - Reliable app detection independent of Accessibility permissions
-  - Works consistently across single/dual user sessions
-  - No longer dependent on System Events responsiveness
-  - Still supports version extraction and ⚠️ LEGACY software flagging
-- **Performance**: ~7 seconds vs. 60-120 seconds with AppleScript
-- **Example Output**: Now correctly detects `Finder 15.5, pCloud Drive 3.15, Mail 16.0, Google Chrome 142.0`
-
----
-
-## What's New in v3.2.2
-
-### Accurate Idle Time Tracking (DATA QUALITY FIX)
-- **Problem**: User idle time showed "6days" while actively using the Mac
-- **Root Cause**: Previous method (`w` command) showed time since last SSH connection, not actual GUI activity
-- **Solution**: Rewritten to use IOHIDSystem via `ioreg` for true GUI input detection
-- **New Features**:
-  - Human-readable formatting: `5s`, `3m`, `1:45`, `2days` instead of raw seconds
-  - Treats <5 seconds idle as "active" (prevents flickering between active/idle)
-  - Accurate tracking of keyboard/mouse/trackpad input
-- **Impact**: Idle time now reflects actual user activity, not last remote login
-- **Example**: User actively typing → shows `active` or `12s`, not `6days`
-
----
-
-## What's New in v3.2.1
-
-### VM Activity State Classification
-- **New Field**: `VM State` with runtime classification based on CPU usage
-- **Activity Levels**:
-  - **Not Running**: No VMs active
-  - **Idle**: VM running but CPU < 5%
-  - **Light Activity**: VM CPU 5-25%
-  - **Moderate Activity**: VM CPU 25-50%
-  - **Active**: VM CPU > 50%
-- **Purpose**: Quickly identify VM workload without analyzing raw CPU numbers
-- **Example**: "Light Activity" indicates VM is running but not under load
+10. **Logging** (stdout/stderr to LaunchAgent logs)
 
 ---
 
@@ -463,9 +416,9 @@ The monitoring system requires these fields in your Airtable base:
     <key>StartInterval</key>
     <integer>1200</integer>
     <key>StandardOutPath</key>
-    <string>/Users/slavicanikolic/Library/Logs/imac_health_monitor.launchd.log</string>
+    <string>/Users/slavicanikolic/Library/Logs/imac-health-monitor.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/slavicanikolic/Library/Logs/imac_health_monitor.launchd.err</string>
+    <string>/Users/slavicanikolic/Library/Logs/imac-health-monitor.err.log</string>
     <key>RunAtLoad</key>
     <true/>
 </dict>
@@ -476,99 +429,6 @@ The monitoring system requires these fields in your Airtable base:
 
 ## Troubleshooting
 
-### Quick Debugging Commands Reference
-
-**Check if monitoring is running:**
-```bash
-launchctl list | grep slavica
-# Should show both agents with exit code 0
-```
-
-**View recent logs:**
-```bash
-# Standard output (last 50 lines)
-tail -50 ~/Library/Logs/imac_health_monitor.launchd.log
-
-# Error log (last 50 lines)
-tail -50 ~/Library/Logs/imac_health_monitor.launchd.err
-
-# Debug log (execution trace)
-cat ~/Documents/imac-health-monitor/.debug_log.txt
-```
-
-**Clear logs (for clean monitoring):**
-```bash
-> ~/Library/Logs/imac_health_monitor.launchd.log
-> ~/Library/Logs/imac_health_monitor.launchd.err
-```
-
-**Stop monitoring:**
-```bash
-# Stop health monitor
-launchctl unload ~/Library/LaunchAgents/com.slavicany.imac-health-monitor.plist
-
-# Stop auto-updater
-launchctl unload ~/Library/LaunchAgents/com.slavicanikolic.imac-health-updater.plist
-```
-
-**Start monitoring:**
-```bash
-# Start health monitor
-launchctl load ~/Library/LaunchAgents/com.slavicany.imac-health-monitor.plist
-
-# Start auto-updater
-launchctl load ~/Library/LaunchAgents/com.slavicanikolic.imac-health-updater.plist
-```
-
-**Force a run now:**
-```bash
-launchctl start com.slavicany.imac-health-monitor
-```
-
-**Remove stale lock file:**
-```bash
-rm ~/Documents/imac-health-monitor/.health_monitor.lock
-```
-
-**Test script manually:**
-```bash
-cd ~/Documents/imac-health-monitor
-./imac_health_monitor.sh
-# Should complete in 1-3 minutes with "Airtable Update: SUCCESS"
-```
-
-**Check for syntax errors:**
-```bash
-bash -n ~/Documents/imac-health-monitor/imac_health_monitor.sh
-# Should return nothing if clean
-```
-
-**Check git status (for auto-updater issues):**
-```bash
-cd ~/Documents/imac-health-monitor
-git status
-# Should show "nothing to commit, working tree clean"
-```
-
-**Fix git issues blocking auto-updater:**
-```bash
-cd ~/Documents/imac-health-monitor
-git stash  # Save local changes
-git pull --rebase  # Get latest from GitHub
-```
-
-**View script version:**
-```bash
-head -5 ~/Documents/imac-health-monitor/imac_health_monitor.sh
-```
-
-**Check when last run completed:**
-```bash
-stat -f "%Sm" ~/Documents/imac-health-monitor/.debug_log.txt
-```
-
----
-
 ### Common Issues
 
 #### Script Always Shows "Critical"
@@ -578,10 +438,10 @@ stat -f "%Sm" ~/Documents/imac-health-monitor/.debug_log.txt
 #### LaunchAgent Not Running
 ```bash
 # Check if loaded
-launchctl list | grep slavica
+launchctl list | grep imac-health
 
 # Check for errors
-tail -50 ~/Library/Logs/imac_health_monitor.launchd.err
+cat ~/Library/Logs/imac-health-monitor.err.log
 
 # Reload agent
 launchctl unload ~/Library/LaunchAgents/com.slavicany.imac-health-monitor.plist
@@ -662,18 +522,6 @@ FIXED: Removes dependence on Accessibility permissions, System Events timeouts, 
 IMPROVED: Application Inventory now consistently captures real running GUI apps for each console user.
 
 IMPROVED: Maintains version lookup + ⚠️ LEGACY flag detection using existing logic.
-
-### v3.2.2 (2025-12-01)
-- **FIXED**: Active user idle-time tracking rewritten to use IOHIDSystem via `ioreg`
-- Corrects cases where user appeared "idle 6days" while actively using the Mac
-- **NEW**: Human-readable idle time formatting (5s, 3m, 1:45, 2days)
-- **IMPROVED**: Detects true GUI keyboard/mouse/trackpad input
-- Treats <5 seconds idle as "active" to prevent flickering
-
-### v3.2.1 (2025-12-01)
-- **NEW**: VM State field with runtime classification (Idle/Light/Moderate/Active/Not Running)
-- **IMPROVED**: VMware CPU usage now used to classify guest OS activity level
-- Provides quick visibility into VM workload without analyzing raw numbers
 
 ### v3.2.0 (2025-11-27) 🎯 MAJOR UPDATE
 - **FIXED**: Adjusted error thresholds based on 281-sample statistical analysis
@@ -801,6 +649,57 @@ IMPROVED: Maintains version lookup + ⚠️ LEGACY flag detection using existing
 
 ---
 
+## System Modifications Log
+
+This section tracks all debugging actions and configuration changes made to the system during troubleshooting. Each entry documents what happened, what was investigated, and what changes were implemented.
+
+### 2025-12-02: Messages.app Wake Freeze Investigation
+
+**Issue Reported:**
+- Time: ~2:35-2:45 PM EST
+- Symptom: GUI completely frozen after wake from sleep; Terminal still functional
+- User action: Force restarted computer at ~2:54 PM
+
+**Investigation:**
+- Analyzed system logs from 2:35-2:45 PM window
+- Identified WindowServer hang (not normal sleep behavior)
+- Found Messages.app (PID 5893) crashed during wake at 2:42:52 PM
+- Root cause: CoreAudio HALC_IOContext_ResumeIO operations blocked WindowServer
+- Contributing factor: External Thunderbolt 3 boot drive + notification sounds during wake (known macOS Sonoma bug)
+
+**System Changes Implemented:**
+- **Date:** 2025-12-02
+- **Component:** Messages.app
+- **Change:** Disabled notification sounds
+- **Method:** Messages → Settings (⌘,) → General → Unchecked "Play sound effects"
+- **Rationale:** Prevent CoreAudio resume operations during system wake that cause WindowServer hang
+- **Testing Status:** ⏳ Pending sleep/wake cycle testing
+- **Expected Result:** System should wake from sleep without freezing
+
+**Evidence:**
+- System logs show Messages.app attempting to resume 3 audio streams (576, 577, 578) at exact time of freeze
+- WindowServer killed Messages connection (PID 5893) at 2:42:52 PM
+- Health monitor data shows 150,153 errors during freeze period (vs normal 3,000-7,000)
+- 805 WindowServer errors detected (vs normal 0-8)
+
+**Related System Context:**
+- Hardware: 2019 iMac 27" with external Thunderbolt 3 SSD (SanDisk PRO-G40 1TB)
+- macOS: Sonoma 15.7.2
+- Messages conversations: 66 (reasonable, not a contributing factor)
+- Screen Time: Disabled
+- Users at time of freeze: Single user (slavicanikolic) logged in
+
+**Next Steps:**
+1. Test multiple sleep/wake cycles to verify fix
+2. If freezes persist, investigate secondary causes:
+   - iCloud Messages sync
+   - Photos sync during wake
+   - Contacts sync operations
+
+**Reference:** Transcript `/mnt/transcripts/2025-12-02-20-45-07-messages-app-wake-freeze-diagnosis.txt`
+
+---
+
 ## Future Enhancements
 
 ### Planned
@@ -879,7 +778,7 @@ For issues or questions:
 
 **Maintainer:** Darren Chilton  
 **Hardware:** 2019 iMac 27" (Sonoma 15.7.2, external Thunderbolt SSD)  
-**Last Verified:** 2025-12-01  
-**Script Version:** 3.2.3  
-**Script Lines:** 950+  
+**Last Verified:** 2025-11-27  
+**Script Version:** 3.2.0  
+**Script Lines:** 840+  
 **Analysis:** 281 samples, 99%+ statistical confidence
