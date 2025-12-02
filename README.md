@@ -673,8 +673,55 @@ This section tracks all debugging actions and configuration changes made to the 
 - **Change:** Disabled notification sounds
 - **Method:** Messages → Settings (⌘,) → General → Unchecked "Play sound effects"
 - **Rationale:** Prevent CoreAudio resume operations during system wake that cause WindowServer hang
-- **Testing Status:** ⏳ Pending sleep/wake cycle testing
+- **Testing Status:** ⏳ In progress - Initial test successful (1 wake cycle), requires 5-10+ cycles for confirmation
 - **Expected Result:** System should wake from sleep without freezing
+
+**Testing Protocol:**
+
+*Configure sleep settings for testing:*
+```bash
+# Enable brief system sleep for testing
+sudo pmset -c sleep 2           # System sleeps after 2 minutes
+sudo pmset -c displaysleep 1    # Display sleeps after 1 minute
+
+# OR manually trigger sleep for immediate testing
+pmset sleepnow
+```
+
+*Test scenarios (perform multiple times):*
+1. **Quick wake test:** Sleep for 10-30 seconds, then wake
+2. **Medium duration:** Sleep for 5-10 minutes (allows background sync processes to queue)
+3. **Overnight test:** Sleep overnight (real-world scenario)
+
+*Signs fix is working:*
+- ✅ Display wakes immediately
+- ✅ GUI responds right away
+- ✅ Can launch apps immediately
+- ✅ No delay before cursor moves
+
+*Signs of remaining issues:*
+- ❌ GUI frozen but Terminal works
+- ❌ Long delay before display wakes
+- ❌ WindowServer unresponsive
+- ❌ Need to force restart
+
+*If freeze occurs again, capture logs immediately:*
+```bash
+# Check if Messages is still involved
+log show --last 30m --predicate 'process == "Messages"' --info --debug
+
+# Check for WindowServer errors
+log show --last 30m --predicate 'process == "WindowServer"' --info --debug
+
+# Check for CoreAudio issues
+log show --last 30m --predicate 'subsystem == "com.apple.coreaudio"' --info --debug
+```
+
+*Restore normal settings after testing:*
+```bash
+sudo pmset -c sleep 0           # Disable automatic sleep
+sudo pmset -c displaysleep 10   # Display sleeps after 10 minutes
+```
 
 **Evidence:**
 - System logs show Messages.app attempting to resume 3 audio streams (576, 577, 578) at exact time of freeze
