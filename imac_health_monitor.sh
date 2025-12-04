@@ -1,9 +1,9 @@
 #!/bin/bash
 ###############################################################################
-# iMac Health Monitor v3.2.4b
+# iMac Health Monitor v3.2.4c
 # Last Updated: 2025-12-03
 #
-# PATCH v3.2.4b (reachability accuracy):
+# PATCH v3.2.4c (reachability accuracy):
 # - Port listening checks now use netstat (LaunchAgent-safe) instead of lsof.
 # - Tailscale detection uses full binary path (aliases/PATH not loaded for agents).
 # - screensharing_running also considers port 5900 listener as evidence of service.
@@ -170,6 +170,9 @@ software_updates=$(safe_timeout 15 softwareupdate --list 2>&1 | \
 ###############################################################################
 # Log collection (1h / 5m)
 ###############################################################################
+# Defaults for fields used in jq payload
+cpu_speed_limit=100
+fan_max_events_1h=0
 debug_log "Starting log collection (1h window)"
 safe_log() {
     local timeout_val=300
@@ -761,6 +764,8 @@ JSON_PAYLOAD=$(jq -n \
   --arg legacy_flags "$legacy_software_flags" \
   --arg debug_log "$DEBUG_LOG_CONTENT" \
   --arg thermal_warn "$thermal_warning_active" \
+  --argjson cpu_speed_limit "$cpu_speed_limit" \
+  --argjson fan_max_events_1h "$fan_max_events_1h" \
   --arg sshd_running "$sshd_running" \
   --arg ssh_port_listening "$ssh_port_listening" \
   --arg screensharing_running "$screensharing_running" \
