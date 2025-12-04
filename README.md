@@ -67,6 +67,24 @@ Bash-based health monitoring system that collects system metrics every 20 minute
 - Updated version to 3.2.3 and last updated date to 2025-12-02
 - Improved header formatting for readability in both markdown and plain text
 
+### Spotlight / PDF Indexing Storm Freeze
+- **Problem**: System became unresponsive again around ~08:30 AM; SSH and Screen Sharing unreachable; forced shutdown required.
+- **Evidence**:
+  - Health Monitor runs continued through **08:07 AM**, then a **~4.5 hour gap** until **12:37 PM** (post-reboot), matching the unresponsive window.
+  - Pre-freeze metrics showed a dominant Spotlight spike:
+    - **07:20 AM baseline**: Error Count ~45,171/hr; Recent 5-min ~2,248; **error_spotlight_1h ~138**.
+    - **07:43 AM spike**: Error Count ~81,884/hr; Recent 5-min ~4,061; **error_spotlight_1h ~3,401**; Critical Fault Count 1; no thermal throttles.
+    - **08:07 AM sustained**: Error Count ~78,168/hr; Recent 5-min ~7,967; **error_spotlight_1h ~3,430**; Critical Fault Count 1; no thermal throttles.
+- **Root Cause (most likely)**: Spotlight/QuickLook PDF indexing storm (mds/mdworker/CGPDFService), likely triggered by large PDF caches (TurboTax formsets and other Library caches), starving system resources.
+- **Change Implemented**:
+  - Disabled Spotlight indexing on Data volume:
+    ```bash
+    sudo mdutil -i off /System/Volumes/Data
+    sudo mdutil -s /System/Volumes/Data
+    ```
+  - **Decision**: Leave indexing **OFF indefinitely** since Spotlight search is not used on this machine.
+- **Testing Plan**: Run with indexing disabled for several days. If freezes stop, keep indexing off permanently. If freezes persist, investigate secondary causes (GPU/WindowServer resets, network stack deadlocks, external SSD I/O stalls).
+
 ---
 
 ## What's New in v3.2.0
@@ -701,6 +719,36 @@ IMPROVED: Maintains version lookup + ⚠️ LEGACY flag detection using existing
 This section tracks all debugging actions and configuration changes made to the system during troubleshooting. Each entry documents what happened, what was investigated, and what changes were implemented.
 
 
+### 2025-12-04: Recurring Freeze Correlated with Spotlight/PDF Indexing Storm
+
+**Issue Reported:**
+- System became unresponsive again around **08:30 AM**.
+- SSH and Screen Sharing were unreachable; local GUI input frozen.
+- Forced shutdown required to recover.
+
+**Investigation:**
+- Health Monitor runs continued through **08:07 AM**, then a **~4.5 hour gap** until **12:37 PM** (post-reboot), matching the unresponsive window.
+- Pre-freeze metrics showed a dominant Spotlight spike:
+  - **07:20 AM baseline:** Error Count ~45,171/hr; Recent 5‑min ~2,248; **error_spotlight_1h ~138**; Critical Fault Count 0; thermal_throttles_1h 0.
+  - **07:43 AM spike:** Error Count ~81,884/hr; Recent 5‑min ~4,061; **error_spotlight_1h ~3,401**; Critical Fault Count 1; thermal_throttles_1h 0.
+  - **08:07 AM sustained:** Error Count ~78,168/hr; Recent 5‑min ~7,967; **error_spotlight_1h ~3,430**; Critical Fault Count 1; thermal_throttles_1h 0.
+- GPU and thermal metrics did not show a comparable step-change during the spike window.
+
+**Conclusion:**
+- Most consistent with a **Spotlight/QuickLook PDF indexing storm** (mds/mdworker/CGPDFService), likely triggered by large PDF caches (TurboTax formsets and other Library caches), starving system resources and wedging remote/GUI services.
+
+**Changes Implemented:**
+- Disabled Spotlight indexing on the **Data volume**:
+  ```bash
+  sudo mdutil -i off /System/Volumes/Data
+  sudo mdutil -s /System/Volumes/Data
+  ```
+- Decision: leave indexing **OFF indefinitely** since Spotlight search is not used on this machine.
+
+**Testing / Monitoring Plan:**
+- Run indexing-off for several days and confirm no further unresponsive events.
+- If freezes persist with indexing off, investigate secondary causes (GPU/WindowServer resets, network stack deadlocks, external SSD I/O stalls).
+
 ### 2025-12-03: Remote Access Outage / PDF Render Storm
 
 **Issue Reported:**
@@ -826,6 +874,10 @@ sudo pmset -c displaysleep 10   # Display sleeps after 10 minutes
 - [ ] Docker container health (if Docker installed)
 - [ ] WiFi signal strength and quality
 - [ ] Automatic Airtable schema validation
+
+- [ ] Spotlight storm early-warning metrics (mds/mdworker/CGPDFService CPU% or process counts)
+- [ ] Run-gap detector ("time since last successful run") to flag probable hangs
+- [ ] Spotlight-only top error extraction for identifying indexing trigger
 
 ### Under Consideration
 - [ ] Local HTML dashboard
