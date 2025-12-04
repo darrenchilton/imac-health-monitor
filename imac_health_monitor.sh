@@ -837,9 +837,7 @@ JSON_PAYLOAD=$(jq -n \
       "error_gpu_1h": $eg,
       "error_systemstats_1h": $est,
       "error_power_1h": $ep,
-      "Error Count": $e1h,
-      "Recent Error Count (5 min)": $e5m,
-      "Critical Fault Count (1h)": $cf1h,
+      
 
       "thermal_throttles_1h": $tt,
       "Thermal Warning Active": $thermal_warn,
