@@ -1,8 +1,8 @@
 # iMac Health Monitor - Technical Documentation
 
-**Version:** 3.2.3
+**Version:** 3.2.4
 
-**Last Updated:** 2025-12-02
+**Last Updated:** 2025-12-03
 
 **Platform:** macOS Sonoma 15.7.2+
 
@@ -18,7 +18,7 @@ Bash-based health monitoring system that collects system metrics every 20 minute
 ### Components
 ```
 /Users/slavicanikolic/Documents/imac-health-monitor/
-├── imac_health_monitor.sh          # Main monitoring script (v3.2.0)
+├── imac_health_monitor.sh          # Main monitoring script (v3.2.4)
 ├── bin/
 │   └── run_imac_health_monitor.sh  # LaunchAgent wrapper
 ├── .env                             # Environment configuration
@@ -428,6 +428,16 @@ The monitoring system requires these fields in your Airtable base:
 - Debug Log (Long text)
 - Raw JSON (Long text)
 
+
+**Reachability / Remote Access (v3.2.4):**
+- sshd_running (Single line text; Yes/No)
+- ssh_port_listening (Single line text; Yes/No)
+- screensharing_running (Single line text; Yes/No)
+- vnc_port_listening (Single line text; Yes/No)
+- tailscale_cli_present (Single line text; Yes/No)
+- tailscale_peer_reachable (Single line text; Yes/No/Unknown)
+- remote_access_artifacts (Long text)
+- remote_access_artifacts_count (Number)
 ### LaunchAgent Configuration
 
 **Health Monitor** (`com.slavicany.imac-health-monitor.plist`):
@@ -690,6 +700,29 @@ IMPROVED: Maintains version lookup + ⚠️ LEGACY flag detection using existing
 
 This section tracks all debugging actions and configuration changes made to the system during troubleshooting. Each entry documents what happened, what was investigated, and what changes were implemented.
 
+
+### 2025-12-03: Remote Access Outage / PDF Render Storm
+
+**Issue Reported:**
+- Remote SSH and Screen Sharing suddenly stopped working, even though Tailscale showed the iMac online.
+- SSH error from remote host: `kex_exchange_identification: read: Connection reset by peer`.
+- Screen Sharing/VNC also failed.
+
+**Investigation:**
+- Verified tailnet reachability: `tailscale ping snimac` and ICMP ping OK; `tailscale status` showed direct path.
+- TCP ports open: `nc -vz <tailscale-ip> 22` and `5900` succeeded.
+- `ssh -vvv` showed reset *before server banner*, indicating server-side/service wedge (not key/cipher mismatch).
+- Local machine GUI was unresponsive; required force quit to regain access.
+- Activity Monitor captured multiple `CGPDFService` workers each ~25% CPU: transient CoreGraphics PDF render storm with no user present (likely Spotlight/QuickLook background thumbnailing).
+- Spotlight index rebuilt to clear potential PDF preview/index corruption.
+- Found residual AnyDesk LaunchDaemons in disabled folders; removed completely.
+
+**Conclusion:**
+- Root cause most consistent with a background PDF preview/render storm starving WindowServer and remote services.
+
+**Changes Implemented:**
+- Upgraded health monitor to v3.2.4 with reachability diagnostics and remote-access residue scan.
+- Added troubleshooting notes and AnyDesk removal steps.
 ### 2025-12-02: Messages.app Wake Freeze Investigation
 
 **Issue Reported:**
