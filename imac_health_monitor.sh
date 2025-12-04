@@ -1,9 +1,16 @@
 #!/bin/bash
 ###############################################################################
-# iMac Health Monitor v3.2.3
+# iMac Health Monitor v3.2.4
 # Last Updated: 2025-12-01
 #
-# CHANGELOG v3.2.3:
+# CHANGELOG v3.2.4:
+# - NEW: Reachability / remote access diagnostics:
+#   - sshd_running + ssh_port_listening
+#   - screensharing_running + vnc_port_listening
+#   - tailscale_cli_present + tailscale_peer_reachable
+#   - remote_access_artifacts + remote_access_artifacts_count
+# - DOC: Added 2025-12-03 troubleshooting entry in README.
+#
 # - CHANGED: Replaced AppleScript/System Events GUI app detection with a
 #   process-based scanner using ps to detect apps running from
 #   *.app/Contents/MacOS/.
@@ -744,6 +751,80 @@ run_duration_seconds=$SECONDS
 DEBUG_LOG_CONTENT=$(cat "$DEBUG_LOG" 2>/dev/null || echo "Debug log unavailable")
 
 ###############################################################################
+###############################################################################
+# Reachability / Remote Access Diagnostics (v3.2.4)
+###############################################################################
+debug_log "START: Reachability/remote access checks"
+
+# sshd running + port listening (22)
+sshd_running="No"
+pgrep -x "sshd" >/dev/null 2>&1 && sshd_running="Yes"
+
+ssh_port_listening="No"
+lsof -iTCP:22 -sTCP:LISTEN >/dev/null 2>&1 && ssh_port_listening="Yes"
+
+# Screen Sharing / VNC running + port listening (5900)
+screensharing_running="No"
+pgrep -x "screensharingd" >/dev/null 2>&1 && screensharing_running="Yes"
+pgrep -x "screensha" >/dev/null 2>&1 && screensharing_running="Yes"  # truncated name safety
+
+vnc_port_listening="No"
+lsof -iTCP:5900 -sTCP:LISTEN >/dev/null 2>&1 && vnc_port_listening="Yes"
+
+# Tailscale CLI presence + peer reachable (simple status check)
+tailscale_cli_present="No"
+tailscale_peer_reachable="Unknown"
+if have_cmd tailscale; then
+    tailscale_cli_present="Yes"
+    if tailscale status 2>/dev/null | grep -qiE "snimac.*active"; then
+        tailscale_peer_reachable="Yes"
+    else
+        tailscale_peer_reachable="No"
+    fi
+fi
+
+# Residual remote-access software scan (AnyDesk, TeamViewer, etc.)
+remote_access_patterns=(
+    "anydesk" "teamviewer" "chrome remote desktop" "remotedesktop"
+    "splashtop" "logmein" "screenconnect" "connectwise"
+    "realvnc" "vnc" "todesk" "rustdesk"
+)
+
+remote_access_artifacts_count=0
+remote_access_artifacts="None"
+
+scan_remote_artifacts() {
+    local hits=""
+    local paths=(
+        "/Library/LaunchDaemons"
+        "/Library/LaunchAgents"
+        "/Library/LaunchDaemonsDisabled"
+        "/Library/LaunchAgents.disabled"
+        "$HOME/Library/LaunchAgents"
+        "/Applications"
+    )
+
+    for p in "${paths[@]}"; do
+        [[ ! -e "$p" ]] && continue
+        for pat in "${remote_access_patterns[@]}"; do
+            local found
+            found=$(find "$p" -iname "*${pat}*" 2>/dev/null | head -20)
+            if [[ -n "$found" ]]; then
+                hits+="$found"$'\n'
+            fi
+        done
+    done
+
+    if [[ -n "$hits" ]]; then
+        hits=$(echo "$hits" | sed '/^$/d' | sort -u)
+        remote_access_artifacts_count=$(echo "$hits" | wc -l | tr -d ' ')
+        remote_access_artifacts=$(echo "$hits" | paste -sd "," -)
+    fi
+}
+scan_remote_artifacts
+
+debug_log "END: Reachability/remote access checks"
+
 # HEALTH SCORING LOGIC (with burst + symptom gating)
 ###############################################################################
 severity="Info"
@@ -869,6 +950,14 @@ JSON_PAYLOAD=$(jq -n \
   --argjson vm_cnt "$vm_count" \
   --argjson vmw_cpu "$vmware_cpu_percent" \
   --argjson vmw_mem "$vmware_memory_gb" \
+  --arg sshd_running "$sshd_running" \
+  --arg ssh_port_listening "$ssh_port_listening" \
+  --arg screensharing_running "$screensharing_running" \
+  --arg vnc_port_listening "$vnc_port_listening" \
+  --arg tailscale_cli_present "$tailscale_cli_present" \
+  --arg tailscale_peer_reachable "$tailscale_peer_reachable" \
+  --arg remote_access_artifacts "$remote_access_artifacts" \
+  --argjson remote_access_artifacts_count "$remote_access_artifacts_count" \
   '{fields: {
       "Run Duration (seconds)": $run_duration,
       "Timestamp": $ts,
@@ -912,6 +1001,14 @@ JSON_PAYLOAD=$(jq -n \
       "High Risk Apps": $high_risk,
       "Resource Hogs": $res_hogs,
       "Legacy Software Flags": $legacy_flags,
+      "sshd_running": $sshd_running,
+      "ssh_port_listening": $ssh_port_listening,
+      "screensharing_running": $screensharing_running,
+      "vnc_port_listening": $vnc_port_listening,
+      "tailscale_cli_present": $tailscale_cli_present,
+      "tailscale_peer_reachable": $tailscale_peer_reachable,
+      "remote_access_artifacts": $remote_access_artifacts,
+      "remote_access_artifacts_count": $remote_access_artifacts_count,
       "Debug Log": $debug_log,
       "user_count": $user_cnt,
       "total_gui_apps": $app_cnt,
