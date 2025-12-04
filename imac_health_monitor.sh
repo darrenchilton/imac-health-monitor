@@ -1,9 +1,9 @@
 #!/bin/bash
 ###############################################################################
-# iMac Health Monitor v3.2.4c
+# iMac Health Monitor v3.2.4d
 # Last Updated: 2025-12-03
 #
-# PATCH v3.2.4c (reachability accuracy):
+# PATCH v3.2.4d (reachability accuracy):
 # - Port listening checks now use netstat (LaunchAgent-safe) instead of lsof.
 # - Tailscale detection uses full binary path (aliases/PATH not loaded for agents).
 # - screensharing_running also considers port 5900 listener as evidence of service.
@@ -874,15 +874,37 @@ FINAL_PAYLOAD=$(jq -n \
   --argjson main "$JSON_PAYLOAD" \
   '{records: [$main]}')
 
-AIRTABLE_URL="https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME}"
+# URL-encode table name (spaces and special chars) for curl
+AIRTABLE_TABLE_NAME_RAW="${AIRTABLE_TABLE_NAME:-System Health}"
+AIRTABLE_TABLE_NAME_ENC="$AIRTABLE_TABLE_NAME_RAW"
 
-debug_log "Posting to Airtable"
-curl -sS -X POST "$AIRTABLE_URL" \
+if have_cmd python3; then
+    AIRTABLE_TABLE_NAME_ENC=$(python3 - <<'PY'
+import os, urllib.parse
+print(urllib.parse.quote(os.environ.get("AIRTABLE_TABLE_NAME_RAW",""), safe=""))
+PY
+)
+else
+    # minimal fallback: encode spaces
+    AIRTABLE_TABLE_NAME_ENC=$(echo "$AIRTABLE_TABLE_NAME_RAW" | sed 's/ /%20/g')
+fi
+
+AIRTABLE_URL="https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME_ENC}"
+
+debug_log "Posting to Airtable: $AIRTABLE_URL"
+response=$(curl -sS -w "
+%{http_code}" -X POST "$AIRTABLE_URL" \
   -H "Authorization: Bearer ${AIRTABLE_PAT}" \
   -H "Content-Type: application/json" \
-  -d "$FINAL_PAYLOAD" >/dev/null 2>&1
+  -d "$FINAL_PAYLOAD")
 
-if [[ $? -eq 0 ]]; then
+http_code=$(echo "$response" | tail -n1)
+body=$(echo "$response" | sed '$d')
+
+debug_log "Airtable HTTP $http_code"
+debug_log "Airtable response: $body"
+
+if [[ "$http_code" =~ ^2 ]]; then
     debug_log "Airtable upload: SUCCESS"
 else
     debug_log "Airtable upload: FAILED"
