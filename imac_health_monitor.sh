@@ -1,9 +1,9 @@
 #!/bin/bash
 ###############################################################################
-# iMac Health Monitor v3.2.4e
+# iMac Health Monitor v3.2.4f
 # Last Updated: 2025-12-03
 #
-# PATCH v3.2.4e (reachability accuracy):
+# PATCH v3.2.4f (reachability accuracy):
 # - Port listening checks now use netstat (LaunchAgent-safe) instead of lsof.
 # - Tailscale detection uses full binary path (aliases/PATH not loaded for agents).
 # - screensharing_running also considers port 5900 listener as evidence of service.
@@ -81,6 +81,15 @@ fi
 set -a
 source "$ENV_PATH"
 set +a
+
+# Backward compatibility: older installs used AIRTABLE_API_KEY
+if [[ -z "${AIRTABLE_PAT:-}" && -n "${AIRTABLE_API_KEY:-}" ]]; then
+    AIRTABLE_PAT="$AIRTABLE_API_KEY"
+fi
+# Clean hidden CR/LF
+AIRTABLE_PAT=$(printf "%s" "$AIRTABLE_PAT" | tr -d '
+' | tr -d '
+')
 
 AIRTABLE_TABLE_NAME="${AIRTABLE_TABLE_NAME:-System Health}"
 
