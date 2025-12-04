@@ -1,9 +1,9 @@
 #!/bin/bash
 ###############################################################################
-# iMac Health Monitor v3.2.4d
+# iMac Health Monitor v3.2.4e
 # Last Updated: 2025-12-03
 #
-# PATCH v3.2.4d (reachability accuracy):
+# PATCH v3.2.4e (reachability accuracy):
 # - Port listening checks now use netstat (LaunchAgent-safe) instead of lsof.
 # - Tailscale detection uses full binary path (aliases/PATH not loaded for agents).
 # - screensharing_running also considers port 5900 listener as evidence of service.
@@ -876,12 +876,11 @@ FINAL_PAYLOAD=$(jq -n \
 
 # URL-encode table name (spaces and special chars) for curl
 AIRTABLE_TABLE_NAME_RAW="${AIRTABLE_TABLE_NAME:-System Health}"
-AIRTABLE_TABLE_NAME_ENC="$AIRTABLE_TABLE_NAME_RAW"
 
 if have_cmd python3; then
-    AIRTABLE_TABLE_NAME_ENC=$(python3 - <<'PY'
-import os, urllib.parse
-print(urllib.parse.quote(os.environ.get("AIRTABLE_TABLE_NAME_RAW",""), safe=""))
+    AIRTABLE_TABLE_NAME_ENC=$(python3 - <<PY
+import urllib.parse
+print(urllib.parse.quote("""$AIRTABLE_TABLE_NAME_RAW""", safe=""))
 PY
 )
 else
