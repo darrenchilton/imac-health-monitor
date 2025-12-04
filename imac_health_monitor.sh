@@ -1,9 +1,9 @@
 #!/bin/bash
 ###############################################################################
-# iMac Health Monitor v3.2.4a
+# iMac Health Monitor v3.2.4b
 # Last Updated: 2025-12-03
 #
-# PATCH v3.2.4a (reachability accuracy):
+# PATCH v3.2.4b (reachability accuracy):
 # - Port listening checks now use netstat (LaunchAgent-safe) instead of lsof.
 # - Tailscale detection uses full binary path (aliases/PATH not loaded for agents).
 # - screensharing_running also considers port 5900 listener as evidence of service.
@@ -497,7 +497,8 @@ determine_high_risk() {
     fi
 
     local legacy_count
-    legacy_count=$(echo "$app_inventory" | grep -c "LEGACY" 2>/dev/null || echo "0")
+    legacy_count=$(echo "$app_inventory" | grep -c "LEGACY" 2>/dev/null)
+    legacy_count=${legacy_count:-0}
     if [[ "$legacy_count" -gt 1 ]]; then echo "Multiple Legacy"
     elif [[ "$legacy_count" -eq 1 ]]; then echo "VMware Legacy"
     else echo "None"; fi
