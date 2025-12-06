@@ -718,6 +718,12 @@ IMPROVED: Maintains version lookup + ⚠️ LEGACY flag detection using existing
 
 This section tracks all debugging actions and configuration changes made to the system during troubleshooting. Each entry documents what happened, what was investigated, and what changes were implemented.
 
+### iCloud Sync Spike Isolation Test
+- **Date**: 2025-12-06 07:00 EST  
+- **Change**: Disabled all iCloud services on this Mac to determine whether the evening and morning error spikes are caused by CloudKit/iCloud background activity.  
+- **Reasoning**: Prior analysis showed strong temporal clustering of errors between 7–10pm and secondary peaks in the morning, consistent with iCloud reconciliation cycles. Spotlight indexing was ruled out after indexing was disabled and error volumes remained elevated.  
+- **Expected Outcome**: If iCloud is the primary driver, evening `Error Count`, `Recent Error Count (5 min)`, and `error_icloud_1h` should decline sharply beginning with this timestamp.  
+- **Next Step**: Gather several days of post-change data and perform a before/after comparison aligned on the 0700 EST 12/6/25 cutoff.
 
 ### 2025-12-04: Recurring Freeze Correlated with Spotlight/PDF Indexing Storm
 
