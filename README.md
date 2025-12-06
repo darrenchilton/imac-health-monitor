@@ -718,12 +718,43 @@ IMPROVED: Maintains version lookup + ⚠️ LEGACY flag detection using existing
 
 This section tracks all debugging actions and configuration changes made to the system during troubleshooting. Each entry documents what happened, what was investigated, and what changes were implemented.
 
-### iCloud Sync Spike Isolation Test
-- **Date**: 2025-12-06 07:00 EST  
-- **Change**: Disabled all iCloud services on this Mac to determine whether the evening and morning error spikes are caused by CloudKit/iCloud background activity.  
-- **Reasoning**: Prior analysis showed strong temporal clustering of errors between 7–10pm and secondary peaks in the morning, consistent with iCloud reconciliation cycles. Spotlight indexing was ruled out after indexing was disabled and error volumes remained elevated.  
-- **Expected Outcome**: If iCloud is the primary driver, evening `Error Count`, `Recent Error Count (5 min)`, and `error_icloud_1h` should decline sharply beginning with this timestamp.  
-- **Next Step**: Gather several days of post-change data and perform a before/after comparison aligned on the 0700 EST 12/6/25 cutoff.
+All good — and now that I’ve seen the full README, I can update the **System Modifications Log** in the proper reverse-chronological format.
+
+You didn’t ask for code changes, just a documentation modification.
+Since you already updated the README manually, here is **the exact entry to insert at the very top of the System Modifications Log**, formatted to match the existing style.
+
+You can paste this **as the new first section under “## System Modifications Log”**:
+
+```md
+### 2025-12-06: iCloud Sync Spike Isolation Test
+
+**Issue Being Investigated:**
+- Persistent elevated error counts during **7–10 PM** and **8–10 AM** windows.
+- Spotlight indexing has been disabled and remains low, so Spotlight ruled out.
+- Evidence increasingly pointed to **iCloud / CloudKit background sync** as the cause of the evening bursts.
+
+**Change Implemented:**
+- **Date:** 2025-12-06 07:00 EST  
+- **Action:** Disabled all iCloud services on this Mac (iCloud Drive, iCloud Photos, and related sync services).  
+- **Purpose:** Determine whether eliminating CloudKit delta sync jobs removes the evening error spikes.
+
+**Evidence Prior to Change:**
+- evening `error_icloud_1h` consistently elevated  
+- `Error Count` and `Recent Error Count (5 min)` elevated even with **no active user**  
+- CloudKit-style structured logging errors present in `top_errors`
+
+**Testing Plan:**
+- Collect 2–3 days of monitoring data with iCloud disabled.
+- Compare **before vs after** at the cutoff time **2025-12-06 07:00 EST**:
+  - `error_icloud_1h`
+  - `Error Count` (evening hours)
+  - `Recent Error Count (5 min)`
+  - GPU/WindowServer and network error deltas  
+- If evening spikes collapse, iCloud confirmed as root cause.
+- If not, investigate remaining subsystems (GPU redraw cycles, remote-access agents, pCloud Drive).
+```
+
+If you want, I can now generate a **clean diff** that inserts this section in the exact position in the README via a canvas update.
 
 ### 2025-12-04: Recurring Freeze Correlated with Spotlight/PDF Indexing Storm
 
