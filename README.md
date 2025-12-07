@@ -775,9 +775,22 @@ IMPROVED: Maintains version lookup + ⚠️ LEGACY flag detection using existing
 
 ## System Modifications Log
 
-## System Modifications Log
-
 This section tracks all debugging actions and configuration changes made to the system during troubleshooting. Each entry documents what happened, what was investigated, and what changes were implemented.
+
+**2025-12-07**
+
+Captured watchdog panic (bug_type 210) showing unexpected exit of watchdogd.
+Observed persistent system-wide trustd errors (Malformed anchor records) across all users.
+Verified errors appear before, during, and after instability events.
+No GPU, WindowServer, or IOGPU indicators present in the panic record.
+External SSD identified as potential contributor to system freezes under load.
+Submitted diagnostic files (Kernel-2025-12-07-121611.panic, trustd-snippet.log) to Apple.
+Implemented interim mitigations: disabled Chrome GPU acceleration, daily restarts, disk checks planned, monitoring trustd error rate.
+
+**2025-12-06**
+Enabled unified log collection for trustd error investigation.
+Added temporary sampling functions to observe bursts of malformed trust anchor errors.
+Prepared panic report extraction tools for next crash.
 
 ### 2025-12-06: iCloud Sync Spike Isolation Test
 
