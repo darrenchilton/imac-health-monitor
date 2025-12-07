@@ -63,27 +63,31 @@ echo "$$" > "$LOCK_FILE"
 trap 'rm -f "$LOCK_FILE"' EXIT
 
 ###############################################################################
-# Airtable configuration (from .env)
+# Load .env (Airtable configuration)
 ###############################################################################
-AIRTABLE_PAT=""
-AIRTABLE_BASE_ID=""
-AIRTABLE_TABLE_NAME=""
-
 ENV_PATH="$SCRIPT_DIR/.env"
+
 if [ ! -f "$ENV_PATH" ]; then
     echo "ERROR: .env file not found at $ENV_PATH"
     exit 1
 fi
 
-# shellcheck disable=SC1090
-. "$ENV_PATH"
+# Load all variables from .env into the environment
+set -a
+source "$ENV_PATH"
+set +a
 
-if [ -z "$AIRTABLE_PAT" ] || [ -z "$AIRTABLE_BASE_ID" ] || [ -z "$AIRTABLE_TABLE_NAME" ]; then
-    echo "ERROR: Airtable variables not set correctly in .env"
-    exit 1
+# Backward compatibility: older installs used AIRTABLE_API_KEY
+if [[ -z "${AIRTABLE_PAT:-}" && -n "${AIRTABLE_API_KEY:-}" ]]; then
+    AIRTABLE_PAT="$AIRTABLE_API_KEY"
 fi
 
-AIRTABLE_API_URL="https://api.airtable.com/v0/$AIRTABLE_BASE_ID/$AIRTABLE_TABLE_NAME"
+# Clean hidden CR/LF characters that can break curl headers
+AIRTABLE_PAT=$(printf "%s" "$AIRTABLE_PAT" | tr -d '\r' | tr -d '\n')
+
+# Provide a sane default if AIRTABLE_TABLE_NAME is not set
+AIRTABLE_TABLE_NAME="${AIRTABLE_TABLE_NAME:-System Health}"
+
 
 ###############################################################################
 # Utility helpers
