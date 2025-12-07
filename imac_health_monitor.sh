@@ -196,16 +196,17 @@ safe_log() {
 LOG_1H=$(safe_log "1h")
 LOG_5M=$(safe_log "5m")
 
-if [[ "$LOG_1H" == "LOG_TIMEOUT" ]]; then
-    errors_1h=0; critical_1h=0
-    error_kernel_1h=0; error_windowserver_1h=0; error_spotlight_1h=0
-    error_icloud_1h=0; error_disk_io_1h=0; error_network_1h=0
-    error_gpu_1h=0; error_systemstats_1h=0; error_power_1h=0
-    thermal_throttles_1h=0; thermal_warning_active="No"
-    cpu_speed_limit=100; fan_max_events_1h=0
-    top_errors="Log collection timed out"
-    unclassified_top_errors="N/A (log collection timed out)"
-else
+ if [[ "$LOG_1H" == "LOG_TIMEOUT" ]]; then
+     errors_1h=0; critical_1h=0
+     error_kernel_1h=0; error_windowserver_1h=0; error_spotlight_1h=0
+     error_icloud_1h=0; error_disk_io_1h=0; error_network_1h=0
+     error_gpu_1h=0; error_systemstats_1h=0; error_power_1h=0
+     thermal_throttles_1h=0; thermal_warning_active="No"
+     cpu_speed_limit=100; fan_max_events_1h=0
+     top_errors="Log collection timed out"
+     unclassified_top_errors="N/A (log collection timed out)"
+ else
+
     errors_1h=$(echo "$LOG_1H" | grep -i "error" | wc -l | tr -d ' ')
     critical_1h=$(echo "$LOG_1H" | grep -iE "<Fault>|<Critical>|\[critical\]|\[fatal\]" | wc -l | tr -d ' ')
     [[ "$critical_1h" -gt "$errors_1h" ]] && critical_1h=$errors_1h
@@ -223,27 +224,28 @@ else
     thermal_throttles_1h=$(echo "$LOG_1H" | grep -iE "thermal.*throttl|throttl.*thermal|cpu.*throttl" | wc -l | tr -d ' ')
     thermal_warning_active="No"
     cpu_speed_limit=100
-    fan_max_events_1h=$(echo "$LOG_1H" | grep -iE "fan.*max|fan.*speed.*high|fan.*rpm" | wc -l | tr -d ' ')
+         fan_max_events_1h=$(echo "$LOG_1H" | grep -iE "fan.*max|fan.*speed.*high|fan.*rpm" | wc -l | tr -d ' ')
+ 
+     top_errors=$(echo "$LOG_1H" \
+         | grep -i "error" \
+         | sed 's/.*error/error/i' \
+         | sort | uniq -c | sort -nr | head -3 \
+         | awk '{$1=""; print substr($0,2)}' \
+         | paste -sd " | " -)
 
-    top_errors=$(echo "$LOG_1H" \
-        | grep -i "error" \
-        | sed 's/.*error/error/i' \
-        | sort | uniq -c | sort -nr | head -3 \
-        | awk '{$1=""; print substr($0,2)}' \
-        | paste -sd " | " -)
+     unclassified_top_errors=$(echo "$LOG_1H" \
+         | grep -i "error" \
+         | grep -viE "kernel|WindowServer|metadata|spotlight|icloud|CloudKit|I/O error|disk.*error|read.*fail|write.*fail|network|dns|resolver|GPU|AMDRadeon|Metal|systemstats|powerd" \
+         | sed 's/.*error/error/i' \
+         | sort | uniq -c | sort -nr | head -3 \
+         | awk '{$1=""; print substr($0,2)}' \
+         | paste -sd " | " -)
+ 
+     if [[ -z "$unclassified_top_errors" ]]; then
+         unclassified_top_errors="None (all errors matched known subsystems)"
+     fi
+ fi
 
-    unclassified_top_errors=$(echo "$LOG_1H" \
-        | grep -i "error" \
-        | grep -viE "kernel|WindowServer|metadata|spotlight|icloud|CloudKit|I/O error|disk.*error|read.*fail|write.*fail|network|dns|resolver|GPU|AMDRadeon|Metal|systemstats|powerd" \
-        | sed 's/.*error/error/i' \
-        | sort | uniq -c | sort -nr | head -3 \
-        | awk '{$1=""; print substr($0,2)}' \
-        | paste -sd " | " -)
-
-    if [[ -z "$unclassified_top_errors" ]]; then
-        unclassified_top_errors="None (all errors matched known subsystems)"
-    fi
-fi
 
 if [[ "$LOG_5M" == "LOG_TIMEOUT" ]]; then
     recent_5m=0
@@ -616,7 +618,7 @@ JSON_PAYLOAD=$(jq -n \
   --arg reasons "$reasons" \
   --arg te "$top_errors" \
   --arg unclassified_te "$unclassified_top_errors" \
-  --arg tc "$top_crashes" \
+  --arg tc "$top_crashes" \   
   --arg gpu_freeze "$gpu_freeze_detected" \
   --arg gpu_events "$gpu_freeze_events" \
   --arg active_users "$active_users" \
@@ -674,14 +676,14 @@ JSON_PAYLOAD=$(jq -n \
       "Time Machine": $tm,
       "Software Updates": $swu,
 
-      "Severity": $severity,
-      "Health Score": $health,
-      "Reasons": $reasons,
+       "Severity": $severity,
+       "Health Score": $health,
+       "Reasons": $reasons,
+       "top_errors": $te,
+       "unclassified_top_errors": $unclassified_te,
+       "top_crashes": $tc,
+       "crash_count": $cc,
 
-      "top_errors": $te,
-      "unclassified_top_errors": $unclassified_te,
-      "top_crashes": $tc,
-      "crash_count": $cc,
 
       "error_kernel_1h": $ek,
       "error_windowserver_1h": $ew,
