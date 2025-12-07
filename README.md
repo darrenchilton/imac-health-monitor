@@ -396,87 +396,107 @@ sudo pmset -c displaysleep 10  # Display sleeps after 10 min
 
 ## Configuration
 
-### Airtable Schema
-The monitoring system requires these fields in your Airtable base:
+## Airtable Schema
 
-**Basic Fields:**
-- Timestamp (DateTime)
-- Hostname (Single line text)
-- macOS Version (Single line text)
-- SMART Status (Single line text)
-- Kernel Panics (Long text)
-- System Errors (Long text)
-- Drive Space (Long text)
-- Uptime (Single line text)
-- Memory Pressure (Single line text)
-- CPU Temperature (Single line text)
-- Time Machine (Single line text)
-- Software Updates (Single line text)
+All health monitor runs are stored in a single Airtable table (System Health). Below are the key fields that the script populates.
 
-**Health Scoring:**
-- Severity (Single select: Info, Warning, Critical)
-- Health Score (Single line text)
-- Reasons (Long text)
+### Core Metadata
 
-**Error Metrics:**
-- error_kernel_1h (Number)
-- error_windowserver_1h (Number)
-- error_spotlight_1h (Number)
-- error_icloud_1h (Number)
-- error_disk_io_1h (Number)
-- error_network_1h (Number)
-- error_gpu_1h (Number)
-- error_systemstats_1h (Number)
-- error_power_1h (Number)
-- Error Count (Number)
-- Recent Error Count (5 min) (Number)
-- Critical Fault Count (1h) (Number)
+- **Timestamp** (DateTime, time zone = UTC)  
+- **Hostname** (Single line text)  
+- **macOS Version** (Single line text)  
+- **SMART Status** (Single line text)  
+- **Kernel Panics** (Long text)  
+- **System Errors** (Long text) – last 5 minutes of high-signal log lines  
+- **Debug Log** (Long text) – raw debug output from the health monitor run  
 
-**System Details:**
-- top_errors (Long text)
-- top_crashes (Long text)
-- crash_count (Number)
-- Run Duration (seconds) (Number)
+### System Details
 
-**Thermal Monitoring:**
-- thermal_throttles_1h (Number)
-- Thermal Warning Active (Single line text)
-- CPU Speed Limit (Number)
+- **Drive Space** (Single line text) – summary of total/used/free space on `/System/Volumes/Data`  
+- **Uptime** (Single line text)  
+- **Memory Pressure** (Number, 0–100) – derived from `vm_stat`  
+- **CPU Temperature** (Single line text) – from `osx-cpu-temp`  
+- **Time Machine** (Single line text) – human-readable backup status  
+- **Software Updates** (Long text) – truncated `softwareupdate -l` output  
 
-**GPU Monitoring:**
-- GPU Freeze Detected (Single line text)
-- GPU Freeze Events (Long text)
+### Health & Errors
 
-**User/App Monitoring (v3.1+):**
-- Active Users (Long text)
-- Application Inventory (Long text)
-- user_count (Number)
-- total_gui_apps (Number)
+- **Severity** (Single select: Info, Warning, Critical)  
+- **Health Score** (Single select: Healthy, Monitor Closely, Attention Needed, System Instability)  
+- **Reasons** (Long text) – explanation for severity/health score  
 
-**VMware Monitoring (v3.1+):**
-- VMware Status (Single line text)
-- VM Activity (Long text)
-- vm_count (Number)
-- vmware_cpu_percent (Number)
-- vmware_memory_gb (Number)
-- High Risk Apps (Single line text)
-- Resource Hogs (Long text)
-- Legacy Software Flags (Long text)
+- **Error Count** (Number) – total `error` lines in last 1h  
+- **Recent Error Count (5 min)** (Number) – `error` lines in last 5m  
+- **Critical Fault Count (1h)** (Number) – `<Fault>`, `<Critical>`, `[fatal]` etc. in last 1h  
+- **Panic Count (24h)** (Number) – kernel panic files in last 24h  
 
-**Debug:**
-- Debug Log (Long text)
-- Raw JSON (Long text)
+- **error_kernel_1h** (Number)  
+- **error_windowserver_1h** (Number)  
+- **error_spotlight_1h** (Number)  
+- **error_icloud_1h** (Number)  
+- **error_disk_io_1h** (Number)  
+- **error_network_1h** (Number)  
+- **error_gpu_1h** (Number)  
+- **error_systemstats_1h** (Number)  
+- **error_power_1h** (Number)  
 
+- **thermal_throttles_1h** (Number)  
+- **Thermal Warning Active** (Checkbox / Single select Yes/No)  
+- **CPU Speed Limit** (Number, percent)  
+- **fan_max_events_1h** (Number)  
 
-**Reachability / Remote Access (v3.2.4):**
-- sshd_running (Single line text; Yes/No)
-- ssh_port_listening (Single line text; Yes/No)
-- screensharing_running (Single line text; Yes/No)
-- vnc_port_listening (Single line text; Yes/No)
-- tailscale_cli_present (Single line text; Yes/No)
-- tailscale_peer_reachable (Single line text; Yes/No/Unknown)
-- remote_access_artifacts (Long text)
-- remote_access_artifacts_count (Number)
+### Error & Crash Summaries
+
+- **top_errors** (Long text)  
+  - Top 1–3 most frequent `error` messages in the last hour (all subsystems).
+- **unclassified_top_errors** (Long text)  
+  - Top 1–3 `error` messages in the last hour that **do not** match any existing error buckets  
+    (`kernel`, `WindowServer`/GPU, Spotlight, iCloud/CloudKit, disk I/O, network, systemstats, `powerd`).  
+  - Used to explain the “mystery” gap between `Error Count` and the sum of `error_*_1h` metrics.
+- **top_crashes** (Long text) – filenames of most recent crash logs  
+- **crash_count** (Number)  
+
+### GPU & Graphics
+
+- **GPU Freeze Detected** (Checkbox / Single select Yes/No)  
+- **GPU Freeze Events** (Long text) – recent WindowServer/GPU/Metal stall/reset events  
+
+### Users & Applications
+
+- **Active Users** (Long text) – `who` output summarized  
+- **user_count** (Number) – unique console users  
+- **Application Inventory** (Long text) – per-user list of GUI apps and versions  
+- **total_gui_apps** (Number) – count of GUI processes  
+- **Resource Hogs** (Long text) – processes over CPU/MEM thresholds  
+
+### VMware / Virtualization
+
+- **VMware Status** (Single select: Running / Not Running)  
+- **VM Activity** (Long text) – per-VM CPU/MEM summary  
+- **vm_count** (Number)  
+- **vmware_cpu_percent** (Number) – summed CPU% across VMs (optional, may be zeroed)  
+- **vmware_memory_gb** (Number) – summed MEM% (or mapped GB) across VMs (optional)  
+- **Legacy Software Flags** (Long text) – e.g., legacy Fusion builds  
+- **High Risk Apps** (Long text)  
+
+### Remote Access & Reachability
+
+- **remote_access_artifacts** (Long text) – AnyDesk/Splashtop processes, apps, prefs, Launch* entries  
+- **remote_access_artifacts_count** (Number)  
+
+- **sshd_running** (Single select Yes/No)  
+- **ssh_port_listening** (Single select Yes/No)  
+- **screensharing_running** (Single select Yes/No)  
+- **vnc_port_listening** (Single select Yes/No)  
+
+- **tailscale_cli_present** (Single select Yes/No)  
+- **tailscale_peer_reachable** (Single select Yes/No/Unknown)  
+
+### Run Metadata
+
+- **Run Duration (seconds)** (Number)  
+- **Debug Log** (Long text) – full per-run debug log from the script
+
 ### LaunchAgent Configuration
 
 **Health Monitor** (`com.slavicany.imac-health-monitor.plist`):
