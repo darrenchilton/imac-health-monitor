@@ -155,7 +155,7 @@ if command -v powermetrics >/dev/null 2>&1; then
 fi
 
 if command -v pmset >/dev/null 2>&1; then
-    thermal_state=$(pmset -g thermlog 2>/dev/null | awk -F'=' '/^ThermalLevel/ {print $2; exit}')
+    thermal_state=$(gtimeout 5 pmset -g thermlog 2>/dev/null | awk -F= '/^ThermalLevel/ {print $2; exit}')
     if [[ -z "$thermal_state" ]]; then
         thermal_state="Unknown"
     fi
@@ -172,7 +172,8 @@ if [[ "$LOG_1H" != "LOG_TIMEOUT" ]]; then
     thermal_throttles_1h=$(echo "$LOG_1H" | grep -iE "throttl" | wc -l | tr -d ' ')
     thermal_warning_active=$(echo "$LOG_1H" | grep -qiE "thermal.*warning|overtemp|over temperature" && echo "Yes" || echo "No")
     if command -v pmset >/dev/null 2>&1; then
-        cpu_speed_limit=$(pmset -g thermlog 2>/dev/null | awk -F'=' '/CPU_Speed_Limit/ {print $2; exit}')
+        cpu_speed_limit=$(gtimeout 5 pmset -g thermlog 2>/dev/null | awk -F= '/CPU_Speed_Limit/ {print $2; exit}')
+
         if [[ -z "$cpu_speed_limit" ]]; then
             cpu_speed_limit=100
         fi
