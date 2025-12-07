@@ -1,8 +1,7 @@
 # iMac Health Monitor - Technical Documentation
+**Version:** 3.2.4  
 
-**Version:** 3.2.4
-
-**Last Updated:** 2025-12-03
+**Last Updated:** 2025-12-06  
 
 **Platform:** macOS Sonoma 15.7.2+
 
@@ -42,6 +41,28 @@ Bash-based health monitoring system that collects system metrics every 20 minute
 10. **Logging** (stdout/stderr to LaunchAgent logs)
 
 ---
+
+## What's New in v3.2.4
+
+### Reachability & Remote Access Diagnostics
+
+- **NEW:** Live reachability checks for remote access:
+  - `sshd_running` / `ssh_port_listening`
+  - `screensharing_running` / `vnc_port_listening`
+  - `tailscale_cli_present` / `tailscale_peer_reachable`
+- **NEW:** `remote_access_artifacts` and `remote_access_artifacts_count` fields:
+  - Detect AnyDesk / Splashtop processes, apps, preferences, LaunchAgents/Daemons.
+  - Make it easy to see if remote access tools exist even when they are not actively running.
+- **Purpose:** Correlate “can’t reach the iMac” events with actual SSH / Screen Sharing / Tailscale state and residual remote access tooling.
+
+### Unclassified Error Attribution (Evening Spike Forensics)
+
+- **NEW:** `unclassified_top_errors` field:
+  - Shows the **top 1–3 error patterns** from the last hour that are **not** attributed to:
+    - kernel, WindowServer/GPU, Spotlight, iCloud/CloudKit, disk I/O, network, systemstats, or powerd.
+- **Why:** Evening 7–10 PM error spikes showed `Error Count` far larger than the sum of tracked `error_*_1h` buckets.
+- **Impact:** Makes it possible to see which macOS daemons/frameworks are responsible for the “mystery” 60–95% of error volume during spikes, without changing any thresholds or scoring logic.
+
 
 ## What's New in v3.2.3
 
@@ -568,6 +589,24 @@ This data is used solely for system stability correlation analysis. No keystroke
 ---
 
 ## Version History
+
+### v3.2.4 (2025-12-06) 🛰 Reachability & Unclassified Error Attribution
+
+- **NEW:** Reachability / remote access diagnostics:
+  - `sshd_running`, `ssh_port_listening`
+  - `screensharing_running`, `vnc_port_listening`
+  - `tailscale_cli_present`, `tailscale_peer_reachable`
+- **NEW:** Remote access residue detection:
+  - `remote_access_artifacts`, `remote_access_artifacts_count`
+  - Flags AnyDesk / Splashtop processes, apps, prefs, LaunchAgents/Daemons.
+- **NEW:** `unclassified_top_errors`:
+  - Summarizes the dominant error messages that do **not** match existing subsystem buckets.
+  - Explains the large gap between overall `Error Count` and tracked `error_*_1h` metrics, especially in evening spikes.
+- **IMPROVED:** Evening and morning investigations:
+  - Can now tell whether high error volume is due to kernel/GPU/Spotlight/iCloud, or other macOS background daemons.
+- **NOTE:** No change to health thresholds or scoring logic; this is pure observability/diagnostics.
+
+
 v3.2.3 (2025-12-01) — GUI App Detection Rewrite
 
 CHANGED: Replaced AppleScript/System Events–based GUI app detection with a fast, reliable ps scan of processes inside *.app/Contents/MacOS/*.
@@ -716,45 +755,38 @@ IMPROVED: Maintains version lookup + ⚠️ LEGACY flag detection using existing
 
 ## System Modifications Log
 
+## System Modifications Log
+
 This section tracks all debugging actions and configuration changes made to the system during troubleshooting. Each entry documents what happened, what was investigated, and what changes were implemented.
 
-All good — and now that I’ve seen the full README, I can update the **System Modifications Log** in the proper reverse-chronological format.
-
-You didn’t ask for code changes, just a documentation modification.
-Since you already updated the README manually, here is **the exact entry to insert at the very top of the System Modifications Log**, formatted to match the existing style.
-
-You can paste this **as the new first section under “## System Modifications Log”**:
-
-```md
 ### 2025-12-06: iCloud Sync Spike Isolation Test
 
 **Issue Being Investigated:**
 - Persistent elevated error counts during **7–10 PM** and **8–10 AM** windows.
-- Spotlight indexing has been disabled and remains low, so Spotlight ruled out.
-- Evidence increasingly pointed to **iCloud / CloudKit background sync** as the cause of the evening bursts.
+- Spotlight indexing has been disabled and remains low, so Spotlight is ruled out as the primary driver.
+- Evidence increasingly pointed to **iCloud / CloudKit background sync** as a major contributor to morning and evening bursts.
 
 **Change Implemented:**
 - **Date:** 2025-12-06 07:00 EST  
-- **Action:** Disabled all iCloud services on this Mac (iCloud Drive, iCloud Photos, and related sync services).  
-- **Purpose:** Determine whether eliminating CloudKit delta sync jobs removes the evening error spikes.
+- **Action:** Disabled iCloud services on this Mac (iCloud Drive, iCloud Photos, and related sync services where possible).  
+- **Purpose:** Determine whether eliminating CloudKit delta sync jobs significantly reduces morning/evening error spikes.
 
 **Evidence Prior to Change:**
-- evening `error_icloud_1h` consistently elevated  
-- `Error Count` and `Recent Error Count (5 min)` elevated even with **no active user**  
-- CloudKit-style structured logging errors present in `top_errors`
+- Evening `error_icloud_1h` frequently elevated.
+- `Error Count` and `Recent Error Count (5 min)` elevated even with **no active user**, indicating scheduled background activity.
+- CloudKit-style structured logging errors present in `top_errors` during many evening runs.
 
 **Testing Plan:**
-- Collect 2–3 days of monitoring data with iCloud disabled.
+- Collect several days of monitoring data with iCloud disabled or minimized.
 - Compare **before vs after** at the cutoff time **2025-12-06 07:00 EST**:
   - `error_icloud_1h`
-  - `Error Count` (evening hours)
+  - `Error Count` (7–10 PM window)
   - `Recent Error Count (5 min)`
-  - GPU/WindowServer and network error deltas  
-- If evening spikes collapse, iCloud confirmed as root cause.
-- If not, investigate remaining subsystems (GPU redraw cycles, remote-access agents, pCloud Drive).
-```
+  - GPU/WindowServer and network error deltas
+- If evening spikes collapse, treat iCloud/CloudKit as primary cause and consider a clean re-onboarding.
+- If spikes remain high, focus on other subsystems (GPU redraw cycles, remote-access agents, pCloud Drive, or other “unclassified” daemons).
 
-If you want, I can now generate a **clean diff** that inserts this section in the exact position in the README via a canvas update.
+---
 
 ### 2025-12-04: Recurring Freeze Correlated with Spotlight/PDF Indexing Storm
 
@@ -766,142 +798,122 @@ If you want, I can now generate a **clean diff** that inserts this section in th
 **Investigation:**
 - Health Monitor runs continued through **08:07 AM**, then a **~4.5 hour gap** until **12:37 PM** (post-reboot), matching the unresponsive window.
 - Pre-freeze metrics showed a dominant Spotlight spike:
-  - **07:20 AM baseline:** Error Count ~45,171/hr; Recent 5‑min ~2,248; **error_spotlight_1h ~138**; Critical Fault Count 0; thermal_throttles_1h 0.
-  - **07:43 AM spike:** Error Count ~81,884/hr; Recent 5‑min ~4,061; **error_spotlight_1h ~3,401**; Critical Fault Count 1; thermal_throttles_1h 0.
-  - **08:07 AM sustained:** Error Count ~78,168/hr; Recent 5‑min ~7,967; **error_spotlight_1h ~3,430**; Critical Fault Count 1; thermal_throttles_1h 0.
+  - **07:20 AM baseline:** Error Count ~45,171/hr; Recent 5-min ~2,248; **error_spotlight_1h ~138**; Critical Fault Count 0; thermal_throttles_1h 0.
+  - **07:43 AM spike:** Error Count ~81,884/hr; Recent 5-min ~4,061; **error_spotlight_1h ~3,401**; Critical Fault Count 1; thermal_throttles_1h 0.
+  - **08:07 AM sustained:** Error Count ~78,168/hr; Recent 5-min ~7,967; **error_spotlight_1h ~3,430**; Critical Fault Count 1; thermal_throttles_1h 0.
 - GPU and thermal metrics did not show a comparable step-change during the spike window.
 
 **Conclusion:**
-- Most consistent with a **Spotlight/QuickLook PDF indexing storm** (mds/mdworker/CGPDFService), likely triggered by large PDF caches (TurboTax formsets and other Library caches), starving system resources and wedging remote/GUI services.
+- Most consistent with a **Spotlight/QuickLook PDF indexing storm** (`mds`, `mdworker`, `CGPDFService`), likely triggered by large PDF caches (TurboTax formsets and other Library caches), starving system resources and wedging remote/GUI services.
 
 **Changes Implemented:**
 - Disabled Spotlight indexing on the **Data volume**:
   ```bash
   sudo mdutil -i off /System/Volumes/Data
   sudo mdutil -s /System/Volumes/Data
-  ```
-- Decision: leave indexing **OFF indefinitely** since Spotlight search is not used on this machine.
+Decision: leave indexing OFF indefinitely since Spotlight search is not used on this machine.
 
-**Testing / Monitoring Plan:**
-- Run indexing-off for several days and confirm no further unresponsive events.
-- If freezes persist with indexing off, investigate secondary causes (GPU/WindowServer resets, network stack deadlocks, external SSD I/O stalls).
+Testing / Monitoring Plan:
 
-### 2025-12-03: Remote Access Outage / PDF Render Storm
+Run indexing-off for several days and confirm no further unresponsive events.
 
-**Issue Reported:**
-- Remote SSH and Screen Sharing suddenly stopped working, even though Tailscale showed the iMac online.
-- SSH error from remote host: `kex_exchange_identification: read: Connection reset by peer`.
-- Screen Sharing/VNC also failed.
+If freezes persist with indexing off, investigate secondary causes (GPU/WindowServer resets, network stack deadlocks, external SSD I/O stalls).
 
-**Investigation:**
-- Verified tailnet reachability: `tailscale ping snimac` and ICMP ping OK; `tailscale status` showed direct path.
-- TCP ports open: `nc -vz <tailscale-ip> 22` and `5900` succeeded.
-- `ssh -vvv` showed reset *before server banner*, indicating server-side/service wedge (not key/cipher mismatch).
-- Local machine GUI was unresponsive; required force quit to regain access.
-- Activity Monitor captured multiple `CGPDFService` workers each ~25% CPU: transient CoreGraphics PDF render storm with no user present (likely Spotlight/QuickLook background thumbnailing).
-- Spotlight index rebuilt to clear potential PDF preview/index corruption.
-- Found residual AnyDesk LaunchDaemons in disabled folders; removed completely.
+2025-12-03: Remote Access Outage / PDF Render Storm
+Issue Reported:
 
-**Conclusion:**
-- Root cause most consistent with a background PDF preview/render storm starving WindowServer and remote services.
+Remote SSH and Screen Sharing suddenly stopped working, even though Tailscale showed the iMac online.
 
-**Changes Implemented:**
-- Upgraded health monitor to v3.2.4 with reachability diagnostics and remote-access residue scan.
-- Added troubleshooting notes and AnyDesk removal steps.
-### 2025-12-02: Messages.app Wake Freeze Investigation
+SSH error from remote host: kex_exchange_identification: read: Connection reset by peer.
 
-**Issue Reported:**
-- Time: ~2:35-2:45 PM EST
-- Symptom: GUI completely frozen after wake from sleep; Terminal still functional
-- User action: Force restarted computer at ~2:54 PM
+Screen Sharing/VNC also failed.
 
-**Investigation:**
-- Analyzed system logs from 2:35-2:45 PM window
-- Identified WindowServer hang (not normal sleep behavior)
-- Found Messages.app (PID 5893) crashed during wake at 2:42:52 PM
-- Root cause: CoreAudio HALC_IOContext_ResumeIO operations blocked WindowServer
-- Contributing factor: External Thunderbolt 3 boot drive + notification sounds during wake (known macOS Sonoma bug)
+Investigation:
 
-**System Changes Implemented:**
-- **Date:** 2025-12-02
-- **Component:** Messages.app
-- **Change:** Disabled notification sounds
-- **Method:** Messages → Settings (⌘,) → General → Unchecked "Play sound effects"
-- **Rationale:** Prevent CoreAudio resume operations during system wake that cause WindowServer hang
-- **Testing Status:** ⏳ In progress - Initial test successful (1 wake cycle), requires 5-10+ cycles for confirmation
-- **Expected Result:** System should wake from sleep without freezing
+Verified tailnet reachability: tailscale ping snimac and ICMP ping OK; tailscale status showed direct path.
 
-**Testing Protocol:**
+TCP ports open: nc -vz <tailscale-ip> 22 and 5900 succeeded.
 
-*Configure sleep settings for testing:*
-```bash
-# Enable brief system sleep for testing
-sudo pmset -c sleep 2           # System sleeps after 2 minutes
-sudo pmset -c displaysleep 1    # Display sleeps after 1 minute
+ssh -vvv showed reset before server banner, indicating server-side/service wedge (not key/cipher mismatch).
 
-# OR manually trigger sleep for immediate testing
-pmset sleepnow
-```
+Local machine GUI was unresponsive; required force quit to regain access.
 
-*Test scenarios (perform multiple times):*
-1. **Quick wake test:** Sleep for 10-30 seconds, then wake
-2. **Medium duration:** Sleep for 5-10 minutes (allows background sync processes to queue)
-3. **Overnight test:** Sleep overnight (real-world scenario)
+Activity Monitor captured multiple CGPDFService workers each ~25% CPU: transient CoreGraphics PDF render storm with no user present (likely Spotlight/QuickLook background thumbnailing).
 
-*Signs fix is working:*
-- ✅ Display wakes immediately
-- ✅ GUI responds right away
-- ✅ Can launch apps immediately
-- ✅ No delay before cursor moves
+Spotlight index was rebuilt to clear potential PDF preview/index corruption.
 
-*Signs of remaining issues:*
-- ❌ GUI frozen but Terminal works
-- ❌ Long delay before display wakes
-- ❌ WindowServer unresponsive
-- ❌ Need to force restart
+Found residual AnyDesk LaunchDaemons in disabled folders; removed completely.
 
-*If freeze occurs again, capture logs immediately:*
-```bash
-# Check if Messages is still involved
-log show --last 30m --predicate 'process == "Messages"' --info --debug
+Conclusion:
 
-# Check for WindowServer errors
-log show --last 30m --predicate 'process == "WindowServer"' --info --debug
+Root cause most consistent with a background PDF preview/render storm starving WindowServer and remote services.
 
-# Check for CoreAudio issues
-log show --last 30m --predicate 'subsystem == "com.apple.coreaudio"' --info --debug
-```
+Changes Implemented:
 
-*Restore normal settings after testing:*
-```bash
-sudo pmset -c sleep 0           # Disable automatic sleep
-sudo pmset -c displaysleep 10   # Display sleeps after 10 minutes
-```
+Upgraded health monitor to v3.2.4 with:
 
-**Evidence:**
-- System logs show Messages.app attempting to resume 3 audio streams (576, 577, 578) at exact time of freeze
-- WindowServer killed Messages connection (PID 5893) at 2:42:52 PM
-- Health monitor data shows 150,153 errors during freeze period (vs normal 3,000-7,000)
-- 805 WindowServer errors detected (vs normal 0-8)
+Reachability diagnostics (SSH/Screen Sharing/Tailscale).
 
-**Related System Context:**
-- Hardware: 2019 iMac 27" with external Thunderbolt 3 SSD (SanDisk PRO-G40 1TB)
-- macOS: Sonoma 15.7.2
-- Messages conversations: 66 (reasonable, not a contributing factor)
-- Screen Time: Disabled
-- Users at time of freeze: Single user (slavicanikolic) logged in
+Remote-access residue scan (AnyDesk/Splashtop presence).
 
-**Next Steps:**
-1. Test multiple sleep/wake cycles to verify fix
-2. If freezes persist, investigate secondary causes:
-   - iCloud Messages sync
-   - Photos sync during wake
-   - Contacts sync operations
+Documented troubleshooting notes and AnyDesk removal steps.
 
-**Reference:** Transcript `/mnt/transcripts/2025-12-02-20-45-07-messages-app-wake-freeze-diagnosis.txt`
+2025-12-02: Messages.app Wake Freeze Investigation
+Issue Reported:
 
----
+Time: ~2:35–2:45 PM EST.
 
+Symptom: GUI completely frozen after wake from sleep; Terminal still functional.
+
+User action: Forced restart at ~2:54 PM.
+
+Investigation:
+
+Analyzed system logs from 2:35–2:45 PM.
+
+Identified WindowServer hang (not normal sleep behavior).
+
+Found Messages.app (PID 5893) crashed during wake at 2:42:52 PM.
+
+Root cause: CoreAudio HALC_IOContext_ResumeIO operations blocked WindowServer.
+
+Contributing factor: External Thunderbolt 3 boot drive + notification sounds during wake (known macOS Sonoma interaction).
+
+System Changes Implemented:
+
+Date: 2025-12-02
+
+Component: Messages.app
+
+Change: Disabled notification sounds.
+
+Method: Messages → Settings (⌘,) → General → Unchecked “Play sound effects”.
+
+Rationale: Prevent CoreAudio resume operations during system wake that cause WindowServer hangs.
+
+Testing Status: In progress – requires multiple sleep/wake cycles for confirmation.
+
+Expected Result: System should wake from sleep without freezing.
+
+Testing Protocol (Summary):
+
+Temporarily enable short sleep intervals via pmset or use pmset sleepnow for manual tests.
+
+Run:
+
+Quick wake tests (10–30 seconds of sleep).
+
+Medium (5–10 minutes).
+
+Overnight sleep.
+
+Signs it’s fixed:
+
+Display and GUI respond immediately.
+
+No forced restarts required.
+
+If freeze recurs, capture Messages/WindowServer/CoreAudio logs immediately for further analysis.
 ## Future Enhancements
 
 ### Planned
