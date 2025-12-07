@@ -284,7 +284,7 @@ if vm_stat_output=$(vm_stat 2>/dev/null); then
     pages_active=$(echo "$vm_stat_output" | awk '/Pages active/ {gsub(/\./,"",$3); print $3}')
     pages_inactive=$(echo "$vm_stat_output" | awk '/Pages inactive/ {gsub(/\./,"",$3); print $3}')
     pages_speculative=$(echo "$vm_stat_output" | awk '/Pages speculative/ {gsub(/\./,"",$3); print $3}')
-    pages_wired=$(echo "$vm_stat_output" | awk '/Pages wired down/ {gsub(/\./,"",$3); print $3}')
+    pages_wired=$(echo "$vm_stat_output" | awk '/Pages wired down/ {gsub(/\./,"",$4); print $4}')
     free_like=$((pages_free + pages_inactive + pages_speculative))
     total_like=$((free_like + pages_active + pages_wired))
     if (( total_like > 0 )); then
@@ -392,36 +392,62 @@ ps_output=$(ps -axo pid,user,comm 2>/dev/null || true)
 if [[ -n "$ps_output" ]]; then
     gui_procs=$(echo "$ps_output" | grep -E "/Applications/.+/.+\.app/Contents/MacOS/.+" | grep -v "grep" || true)
     if [[ -n "$gui_procs" ]]; then
-        declare -A user_apps
-        while read -r pid owner cmd; do
-            [[ -z "$pid" ]] && continue
-            app_path=$(echo "$cmd" | sed 's/\/Contents\/MacOS\/.*//')
-            app_name=$(basename "$app_path")
-            app_version="Unknown"
-            if [[ -d "$app_path/Contents" ]]; then
-                version_raw=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app_path/Contents/Info.plist" 2>/dev/null || true)
-                [[ -n "$version_raw" ]] && app_version="$version_raw"
-            fi
-            key="$owner"
-            value="${app_name} ${app_version}"
-            if [[ -n "${user_apps[$key]:-}" ]]; then
-                user_apps["$key"]+=", ${value}"
-            else
-                user_apps["$key"]="$value"
-            fi
-        done <<< "$(echo "$gui_procs" | awk '{print $1" "$2" "$3}')"
+        -    if [[ -n "$gui_procs" ]]; then
+-        declare -A user_apps
+-        while read -r pid owner cmd; do
+-            [[ -z "$pid" ]] && continue
+-            app_path=$(echo "$cmd" | sed 's/\/Contents\/MacOS\/.*//')
+-            app_name=$(basename "$app_path")
+-            app_version="Unknown"
+-            if [[ -d "$app_path/Contents" ]]; then
+-                version_raw=$(/usr/libexec/PlistBuddy -c "Print ...sionString" "$app_path/Contents/Info.plist" 2>/dev/null || true)
+-                [[ -n "$version_raw" ]] && app_version="$version_raw"
+-            fi
+-            key="$owner"
+-            value="${app_name} ${app_version}"
+-            if [[ -n "${user_apps[$key]:-}" ]]; then
+-                user_apps["$key"]+=", ${value}"
+-            else
+-                user_apps["$key"]="$value"
+-            fi
+-        done <<< "$(echo "$gui_procs" | awk '{print $1" "$2" "$3}')"
+-
+-        app_lines=""
+-        for u in "${!user_apps[@]}"; do
+-            line="[$u] ${user_apps[$u]}"
+-            if [[ -z "$app_lines" ]]; then
+-                app_lines="$line"
+-            else
+-                app_lines="${app_lines}\n${line}"
+-            fi
+-        done
+-        application_inventory="$app_lines"
+-        total_gui_apps=$(echo "$gui_procs" | wc -l | tr -d ' ')
+-    fi
++    if [[ -n "$gui_procs" ]]; then
++        app_lines=""
++        while read -r pid owner cmd; do
++            [[ -z "$pid" ]] && continue
++            app_path=$(echo "$cmd" | sed 's/\/Contents\/MacOS\/.*//')
++            app_name=$(basename "$app_path")
++            app_version="Unknown"
++            if [[ -d "$app_path/Contents" ]]; then
++                version_raw=$(/usr/libexec/PlistBuddy -c "Print ...sionString" "$app_path/Contents/Info.plist" 2>/dev/null || true)
++                [[ -n "$version_raw" ]] && app_version="$version_raw"
++            fi
++            line="[$owner] ${app_name} ${app_version}"
++            if [[ -z "$app_lines" ]]; then
++                app_lines="$line"
++            else
++                app_lines="${app_lines}\n${line}"
++            fi
++        done <<< "$(echo "$gui_procs" | awk '{print $1" "$2" "$3}')"
++
++        application_inventory="$app_lines"
++        total_gui_apps=$(echo "$gui_procs" | wc -l | tr -d ' ')
++    fi
+ fi
 
-        app_lines=""
-        for u in "${!user_apps[@]}"; do
-            line="[$u] ${user_apps[$u]}"
-            if [[ -z "$app_lines" ]]; then
-                app_lines="$line"
-            else
-                app_lines="${app_lines}\n${line}"
-            fi
-        done
-        application_inventory="$app_lines"
-        total_gui_apps=$(echo "$gui_procs" | wc -l | tr -d ' ')
     fi
 fi
 
