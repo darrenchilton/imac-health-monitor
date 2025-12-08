@@ -4,3 +4,4 @@
 .debug_log.txt
 .health_monitor.lock
 .debug_log.txt
+.env.bak

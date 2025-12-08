@@ -367,3 +367,29 @@
 [23:09:35] Airtable response (truncated 500 chars): {"id":"recOYsxcANqZS9dJY","createdTime":"2025-12-08T04:09:35.000Z","fields":{"Name":"Attention Needed-Warning-Dec 7, 2025 11:09 PM","Timestamp":"2025-12-08T04:09:34.000Z","Hostname":"SN_iMac","macOS Version":"15.7.2","Kernel Panics":"1 panic(s), 1 watchdog panic(s) - Watchdog panic at 2025-12-07 12:16; ","System Errors":"Log Activity: 65307 errors (3413 recent, 7 critical)","Drive Space":"Total: 931Gi, Used: 359Gi (40%), Available: 557Gi","Uptime":"8:12, 3","Memory Pressure":"7%","CPU Temperatur
 [23:09:35] Airtable record created successfully: recOYsxcANqZS9dJY
 [23:09:35] Script completed in 4:37
+[09:11:24] === SCRIPT START ===
+[09:11:24] Getting hostname and macOS version
+[09:11:24] Detecting boot device
+[09:11:24] Checking SMART status for /dev/disk2s4s1
+[09:11:24] Checking external SSD health
+[09:11:26] Checking for kernel panic files
+[09:11:26] Checking for watchdog panics
+[09:11:26] Checking Time Machine backup age
+[09:11:26] Checking for software updates
+[09:11:29] Starting log collection (1h window)
+[09:12:42] Checking for crash reports
+[09:12:42] Checking drive space
+[09:12:42] Getting system info (uptime, memory, CPU temp)
+[09:12:42] Detecting recent reboots
+[09:12:42] Checking for GPU freeze patterns (10-minute window)
+[09:12:46] START: User/app monitoring
+[09:12:49] END: User/app monitoring
+[09:12:49] START: Reachability/remote access checks
+[09:12:49] END: Reachability/remote access checks
+[09:12:49] Starting JSON payload build with jq
+[09:12:49] Finished JSON payload build with jq
+[09:12:49] Starting Airtable upload
+[09:12:50] Curl to Airtable finished with exit code 0
+[09:12:50] Airtable HTTP status: 401
+[09:12:50] Airtable response (truncated 500 chars): {"error":{"type":"UNAUTHORIZED","message":"Invalid authentication token"}}
+[09:12:50] Airtable upload failed with status 401
