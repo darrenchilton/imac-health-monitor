@@ -5,3 +5,12 @@
 .health_monitor.lock
 .debug_log.txt
 .env.bak
+
+# Local runtime / OS junk
+.DS_Store
+._*
+debug.log
+.debug_log.txt
+.last_uptime
+.env
+.env.*
