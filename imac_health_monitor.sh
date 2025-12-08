@@ -1048,6 +1048,7 @@ jq_payload=$(jq -n \
     '{
         "fields": {
             "Hostname": $hostname,
+            "Run Duration (seconds)": ($runtime_secs | tonumber),
             "macOS Version": $macos,
             "SMART Status": $smart,
             "Kernel Panics": $panics,
