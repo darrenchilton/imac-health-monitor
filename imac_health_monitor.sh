@@ -945,6 +945,7 @@ disk_used_pct=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
 cpu_temp_c=$(echo "$cpu_temp" | sed 's/°C//')
 cpu_temp_f=$(awk "BEGIN {printf \"%.1f\", ($cpu_temp_c * 9 / 5) + 32}" 2>/dev/null || echo "#ERROR!")
 timestamp=$(date '+%m/%d/%Y %I:%M%p')
+timestamp_iso=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
 date_only=$(date '+%Y-%m-%d')
 hour_of_day=$(date '+%-H')
 is_evening=$(if [[ "$hour_of_day" -ge 19 && "$hour_of_day" -lt 22 ]]; then echo "Yes"; else echo "No"; fi)
@@ -960,10 +961,10 @@ ERROR_OBJECT=$(cat <<EOF
 {"errors_1h": $errors_1h,"recent_5m": $recent_5m,"critical_1h": $critical_1h}
 EOF
 )
-
+debug_log "Starting JSON payload build with jq"
 jq_payload=$(jq -n \
     --arg name "$record_name" \
-    --arg timestamp "$timestamp" \
+    --arg timestamp "$timestamp_iso" \
     --arg runtime "$runtime" \
     --arg runtime_secs "$runtime_secs" \
     --arg hostname "$HOSTNAME" \
@@ -1046,11 +1047,8 @@ jq_payload=$(jq -n \
     --arg reboot_info "$reboot_info" \
     '{
         "fields": {
-            "Name": $name,
-            "Created (AT)": $timestamp,
-            "Run Duration (mins:secs)": $runtime,
-            "Run Duration (seconds)": ($runtime_secs | tonumber),
             "Hostname": $hostname,
+            "Run Duration (seconds)": ($runtime_secs | tonumber),
             "macOS Version": $macos,
             "SMART Status": $smart,
             "Kernel Panics": $panics,
@@ -1060,18 +1058,10 @@ jq_payload=$(jq -n \
             "CPU Temperature": $cpu_temp,
             "Time Machine": $tm,
             "Severity": $severity,
-            "Health Score": ($score | tonumber),
+            "Health Score": $health,
             "Reasons": $reasons,
-            "CPU Temperature (°F)": $cpu_temp_f,
-            "Date": $date,
-            "Disk Used %": ($disk_pct | tonumber),
-            "CPU Temp (°C)": $cpu_temp_c,
-            "Error Count": ($error_count | tonumber),
-            "Recent Error Count (5 min)": ($recent_count | tonumber),
-            "Critical Fault Count (1h)": ($critical_count | tonumber),
-            "TM Age (days)": ($tm_age | tonumber),
+            "Timestamp": $timestamp,
             "Software Updates": $sw_updates,
-            "Error Object": $error_obj,
             "top_errors": $top_errors,
             "top_crashes": $top_crashes,
             "error_kernel_1h": ($error_kernel | tonumber),
@@ -1106,8 +1096,6 @@ jq_payload=$(jq -n \
             "vmware_cpu_percent": ($vmware_cpu | tonumber),
             "Thermal Warning Active": $thermal_warn,
             "CPU Speed Limit": ($cpu_limit | tonumber),
-            "Hour of Day (from Timestamp)": ($hour | tonumber),
-            "Evening (7-10pm EST)?": $evening,
             "sshd_running": $sshd,
             "ssh_port_listening": $ssh_port,
             "screensharing_running": $screenshare,
@@ -1129,25 +1117,54 @@ jq_payload=$(jq -n \
             "Reboot Info": $reboot_info
         }
     }')
-
+debug_log "Finished JSON payload build with jq"
 ###############################################################################
 # Upload to Airtable
 ###############################################################################
-RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-    -X POST "https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME}" \
+###############################################################################
+# Upload to Airtable
+###############################################################################
+debug_log "Starting Airtable upload"
+
+echo "DEBUG: jq_payload length = ${#jq_payload}"
+echo "DEBUG: First 500 chars:"
+echo "${jq_payload:0:500}"
+echo "---"
+echo "DEBUG: About to curl..."
+echo "AIRTABLE_PAT: ${AIRTABLE_PAT:0:20}..."
+echo "AIRTABLE_BASE_ID: $AIRTABLE_BASE_ID"
+echo "AIRTABLE_TABLE_NAME: $AIRTABLE_TABLE_NAME"
+echo "URL: https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME}"
+
+RESPONSE=$(curl -sS --connect-timeout 10 --max-time 30 -w "\nHTTP_STATUS:%{http_code}" \
+    -X POST "https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/System%20Health" \
     -H "Authorization: Bearer ${AIRTABLE_PAT}" \
     -H "Content-Type: application/json" \
     --data "$jq_payload")
 
+CURL_EXIT=$?
+debug_log "Curl to Airtable finished with exit code $CURL_EXIT"
+
+if [ "$CURL_EXIT" -ne 0 ]; then
+    echo "curl failed with exit code $CURL_EXIT (likely network/DNS/TLS issue talking to Airtable)"
+    debug_log "Curl failed with exit code $CURL_EXIT; aborting before HTTP parse"
+    exit 1
+fi
+
 HTTP_BODY=$(echo "$RESPONSE" | sed -e 's/HTTP_STATUS\:.*//g')
 HTTP_STATUS=$(echo "$RESPONSE" | tr -d '\n' | sed -e 's/.*HTTP_STATUS://')
 
+debug_log "Airtable HTTP status: $HTTP_STATUS"
+debug_log "Airtable response (truncated 500 chars): $(echo "$HTTP_BODY" | head -c 500)"
+
 if [ "$HTTP_STATUS" -eq 200 ]; then
     RECORD_ID=$(echo "$HTTP_BODY" | jq -r '.id // "unknown"')
-    echo "✅ Record created successfully: $RECORD_ID"
+    echo "Record created successfully: $RECORD_ID"
+    debug_log "Airtable record created successfully: $RECORD_ID"
 else
-    echo "❌ Upload failed with status $HTTP_STATUS"
+    echo "Upload failed with status $HTTP_STATUS"
     echo "Response: $HTTP_BODY"
+    debug_log "Airtable upload failed with status $HTTP_STATUS"
     exit 1
 fi
 
