@@ -2,6 +2,8 @@
 
 The iMac Health Monitor is a Bash-based system that collects hardware, OS, user, and error metrics every 20 minutes and sends them to Airtable for centralized analysis. It is optimized for a 2019 iMac running macOS Sonoma from an external Thunderbolt SSD, with statistically calibrated thresholds that reflect real macOS log volume.
 
+**Version 3.4.0** adds RTC clock drift monitoring to detect hardware timing issues that can cause GPU timeouts and system instability.
+
 This README covers what the system is, how to install it, how to configure it, and what metrics it reports.
 
 ---
@@ -100,6 +102,10 @@ The monitor collects hardware state, OS activity, and diagnostic information:
 - Thermal throttling indicators  
 - Top errors (1h)  
 - Unclassified top errors (1h)
+- **RTC Clock Drift Monitoring**
+  - Clock Drift Status (Healthy/Warning/Critical)
+  - Clock Offset (seconds from NTP)
+  - Clock Drift Details (includes rateSf clamping events)
 
 ### Users & Applications
 - Active console users  
@@ -130,9 +136,17 @@ The monitor collects hardware state, OS activity, and diagnostic information:
 
 ---
 
-## Current Version: v3.3.0 (High-Level Notes)
+## Current Version: v3.4.0
 
-This version refines diagnostic clarity and schema expectations building on the v3.2 series (statistical thresholds, reachability checks, unclassified error analysis).  
+### RTC Clock Drift Monitoring (v3.4.0 - Dec 2025)
+- Real-time NTP offset detection via `sntp`
+- Automatic classification: Healthy (<0.1s), Warning (0.1-0.2s), Critical (>0.2s)
+- Detects rateSf clamping errors (indicates persistent hardware clock issues)
+- Integrated into health scoring and severity assessment
+- Addresses correlation between clock drift and GPU timeouts/watchdog panics
+
+### Previous Enhancements (v3.2.x - v3.3.0)
+This version builds on statistical thresholds, crash detection, reachability checks, and unclassified error analysis from v3.2-3.3 series.  
 Full details are in `SYSTEM_NOTES.md`.
 
 **Also included:**  
@@ -161,4 +175,3 @@ curl -X GET "https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NA
 
 ## License
 MIT License
-
