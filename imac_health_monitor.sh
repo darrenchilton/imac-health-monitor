@@ -495,11 +495,11 @@ clock_offset_seconds=$(echo "$clock_drift_data" | cut -d'|' -f2)
 clock_drift_details=$(echo "$clock_drift_data" | cut -d'|' -f3)
 
 # Check for recent rateSf clamping errors in timed logs
-ratesf_errors=$(log show --predicate 'process == "timed" AND eventMessage CONTAINS "rateSf clamped"' --last 24h 2>/dev/null | grep -c "rateSf clamped" || echo "0")
-if [[ "$ratesf_errors" -gt 0 ]]; then
-    clock_drift_details+=" | ${ratesf_errors} rateSf clamp events in 24h"
-    [[ "$clock_drift_status" == "Healthy" && "$ratesf_errors" -gt 5 ]] && clock_drift_status="Warning"
-fi
+#ratesf_errors=$(log show --predicate 'process == "timed" AND eventMessage CONTAINS "rateSf clamped"' --last 24h 2>/dev/null | grep -c "rateSf clamped" || echo "0")
+#if [[ "$ratesf_errors" -gt 0 ]]; then
+#    clock_drift_details+=" | ${ratesf_errors} rateSf clamp events in 24h"
+#    [[ "$clock_drift_status" == "Healthy" && "$ratesf_errors" -gt 5 ]] && clock_drift_status="Warning"
+#fi
 
 ###############################################################################
 # User/Application Monitoring Functions
