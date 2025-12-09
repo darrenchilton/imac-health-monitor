@@ -498,7 +498,7 @@ clock_drift_details=$(echo "$clock_drift_data" | cut -d'|' -f3)
 ratesf_errors=$(log show --predicate 'process == "timed" AND eventMessage CONTAINS "rateSf clamped"' --last 1h 2>/dev/null | grep -c "rateSf clamped" || echo "0")
 if [[ "$ratesf_errors" -gt 0 ]]; then
     clock_drift_details+=" | ${ratesf_errors} rateSf clamp events in 1h"
-    [[ "$clock_drift_status" == "Healthy" && "$ratesf_errors" -gt 2 ]] && clock_drift_status="Warning"
+    [[ "$clock_drift_status" == "Healthy" && "$ratesf_errors" -gt 5 ]] && clock_drift_status="Warning"
 fi
 ###############################################################################
 # User/Application Monitoring Functions
