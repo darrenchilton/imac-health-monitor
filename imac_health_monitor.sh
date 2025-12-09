@@ -448,6 +448,60 @@ gpu_freeze_detected="No"
 gpu_freeze_events="$gpu_issues"
 
 ###############################################################################
+# RTC Clock Drift Monitoring
+###############################################################################
+check_clock_drift() {
+    debug_log "Checking RTC clock drift"
+    local sntp_output
+    local clock_offset_raw
+    local clock_offset
+    local clock_status
+    local clock_details
+    
+    # Run sntp with timeout
+    sntp_output=$(safe_timeout 10 sudo sntp -d time.apple.com 2>&1 | tail -1)
+    
+    if [[ -z "$sntp_output" ]]; then
+        echo "Unknown|0.000|Unable to contact time server"
+        return
+    fi
+    
+    # Extract offset (first number, e.g., "+0.057356")
+    clock_offset_raw=$(echo "$sntp_output" | awk '{print $1}')
+    clock_offset=$(echo "$clock_offset_raw" | tr -d '+')
+    
+    # Determine status based on offset magnitude (absolute value)
+    local abs_offset
+    abs_offset=$(awk "BEGIN {val=$clock_offset; if(val<0) val=-val; print val}")
+    
+    if (( $(awk "BEGIN {print ($abs_offset > 0.2)}") )); then
+        clock_status="Critical"
+        clock_details="Clock drift ${clock_offset_raw}s (>0.2s = significant drift, likely hardware issue)"
+    elif (( $(awk "BEGIN {print ($abs_offset > 0.1)}") )); then
+        clock_status="Warning"  
+        clock_details="Clock drift ${clock_offset_raw}s (>0.1s = elevated drift)"
+    else
+        clock_status="Healthy"
+        clock_details="Clock drift ${clock_offset_raw}s (normal range)"
+    fi
+    
+    echo "$clock_status|$clock_offset|$clock_details"
+}
+
+debug_log "Checking RTC clock drift via NTP"
+clock_drift_data=$(check_clock_drift)
+clock_drift_status=$(echo "$clock_drift_data" | cut -d'|' -f1)
+clock_offset_seconds=$(echo "$clock_drift_data" | cut -d'|' -f2)
+clock_drift_details=$(echo "$clock_drift_data" | cut -d'|' -f3)
+
+# Check for recent rateSf clamping errors in timed logs
+ratesf_errors=$(log show --predicate 'process == "timed" AND eventMessage CONTAINS "rateSf clamped"' --last 24h 2>/dev/null | grep -c "rateSf clamped" || echo "0")
+if [[ "$ratesf_errors" -gt 0 ]]; then
+    clock_drift_details+=" | ${ratesf_errors} rateSf clamp events in 24h"
+    [[ "$clock_drift_status" == "Healthy" && "$ratesf_errors" -gt 5 ]] && clock_drift_status="Warning"
+fi
+
+###############################################################################
 # User/Application Monitoring Functions
 ###############################################################################
 get_active_users() {
@@ -906,6 +960,16 @@ elif [[ "$gpu_status" == "Warning" ]]; then
     reasons+="GPU warnings; "
 fi
 
+if [[ "$clock_drift_status" == "Critical" ]]; then
+    health_score=$((health_score - 25))
+    severity="Critical"
+    reasons+="Critical clock drift (>0.2s); "
+elif [[ "$clock_drift_status" == "Warning" ]]; then
+    health_score=$((health_score - 15))
+    [[ "$severity" == "Info" ]] && severity="Warning"
+    reasons+="Elevated clock drift; "
+fi
+
 if [[ "$io_stall_count" -gt 0 ]]; then
     health_score=$((health_score - 20))
     [[ "$severity" == "Info" ]] && severity="Warning"
@@ -1045,6 +1109,9 @@ jq_payload=$(jq -n \
     --arg io_details "$io_stall_details" \
     --arg reboot "$reboot_detected" \
     --arg reboot_info "$reboot_info" \
+    --arg clock_status "$clock_drift_status" \
+    --arg clock_offset "$clock_offset_seconds" \
+    --arg clock_details "$clock_drift_details" \
     '{
         "fields": {
             "Hostname": $hostname,
@@ -1115,6 +1182,9 @@ jq_payload=$(jq -n \
             "I/O Stall Details": $io_details,
             "Reboot Detected": $reboot,
             "Reboot Info": $reboot_info
+            "Clock Drift Status": $clock_status,
+            "Clock Offset (seconds)": ($clock_offset | tonumber),
+            "Clock Drift Details": $clock_details
         }
     }')
 debug_log "Finished JSON payload build with jq"
