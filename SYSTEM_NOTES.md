@@ -8,8 +8,6 @@ This document contains the full system history, version changes, debugging inves
 
 # 1. Version History
 
-(From original README; preserved verbatim for accuracy.)
-
 ## v3.2.4 (2025-12-06) — Reachability & Unclassified Error Attribution
 - sshd/screen sharing/tailscale diagnostics  
 - Remote-access residue detection  
@@ -57,6 +55,23 @@ This document contains the full system history, version changes, debugging inves
 ---
 
 # 2. System Modifications Log & Incident Timeline
+
+## 2025-12-09 — RTC Clock Drift & Potential Hardware Issue Detected
+- Discovered persistent "Wall Clock adjustment detected" warnings in `log show` output
+- Investigation revealed significant RTC clock drift: ~45-54 ppm (gains 4-5 seconds/day)
+- NTP making corrections every 15-20 minutes (offset ~0.47 seconds)
+- Clock drift correlates with:
+  - GPU timeout events (Dec 7, Dec 3, Nov 23)
+  - Watchdog panic (Dec 7)
+  - Persistent trustd malformed anchor errors
+  - External SSD I/O timing issues
+- **Hypothesis**: Low-level SMC/motherboard hardware issue affecting system timing, cascading into GPU coordination problems, external SSD I/O delays, and security framework errors
+- **Action Plan**: 
+  1. Perform SMC reset
+  2. Test boot from internal drive to isolate external SSD timing dependency
+  3. Monitor if clock drift, GPU timeouts, and watchdog panics cease
+  4. If symptoms persist: Apple hardware service likely needed
+- Status: Investigation pending, troubleshooting steps to be executed
 
 ## 2025-12-07 — Watchdog Panic & trustd Errors
 - Captured watchdog panic (bug_type 210)  
@@ -115,6 +130,54 @@ Testing underway after disabling iCloud sync services.
 Widespread trustd errors appear frequently independent of major instability events.  
 Under investigation; may interact with external SSD or corrupted keychain state.
 
+## RTC Clock Drift Investigation (Dec 2025)
+Discovered significant Real-Time Clock drift affecting system stability:
+
+**Symptoms**:
+- `log show` consistently reports "Wall Clock adjustment detected" warnings
+- System clock running 45-54 parts per million (ppm) too fast
+- Gains approximately 4-5 seconds per day
+- NTP forced to correct by ~0.47 seconds every 15-20 minutes
+
+**Technical Details**:
+- `sntp -d time.apple.com` shows consistent +0.469 second offset
+- `timed` logs show `rateSf clamped: 1.000046-1.000054` errors
+- Frequent `settimeofday` adjustments in system logs
+
+**Correlation Analysis**:
+Strong correlation observed between clock drift events and:
+1. GPU timeout events ("timed out waiting for X events") - Dec 7, Dec 3, Nov 23
+2. Watchdog panic (Dec 7, bug_type 210)
+3. trustd malformed anchor errors (ongoing)
+4. External SSD I/O coordination issues
+
+**Root Cause Hypothesis**:
+Clock drift suggests SMC or motherboard-level hardware issue affecting:
+- System interrupt timing → affects GPU coordination
+- External Thunderbolt SSD I/O timing
+- Security framework certificate/timestamp validation
+- Overall system synchronization
+
+**External SSD Boot Interaction**:
+External boot device may be exacerbating underlying clock issue:
+- I/O latency on external drives affected by interrupt timing
+- USB/Thunderbolt controller depends on accurate system clocks
+- Clock corrections can confuse external I/O operation timing
+
+**Testing Protocol**:
+1. Perform SMC reset to address hardware clock timing
+2. Monitor NTP offset and correction frequency for 24-48 hours
+3. Test internal drive boot to isolate external SSD timing dependency
+4. Track correlation: does fixing clock drift also eliminate GPU timeouts?
+5. If clock drift persists after SMC reset + internal boot test: hardware service needed
+
+**Expected Outcome**:
+If SMC/hardware is root cause, successful repair should eliminate:
+- Excessive clock drift (should be <10 ppm)
+- GPU timeout events
+- Watchdog panics
+- Reduction in trustd errors
+
 ---
 
 # 4. Troubleshooting & Runbooks
@@ -134,6 +197,45 @@ Under investigation; may interact with external SSD or corrupted keychain state.
 - Check Tailscale direct path  
 - Check local TCP ports  
 - Examine WindowServer / CGPDFService activity  
+
+### RTC Clock Drift Troubleshooting
+**Symptoms**: "Wall Clock adjustment detected" warnings, frequent NTP corrections
+
+**Diagnosis**:
+```bash
+# Check current clock offset
+sudo sntp -d time.apple.com
+
+# Monitor timed daemon for clock adjustments
+log show --predicate 'process == "timed"' --last 1h
+
+# Check for rateSf clamping errors
+log show --predicate 'process == "timed"' --last 7d | grep "rateSf clamped"
+```
+
+**Resolution Steps**:
+1. **SMC Reset** (iMac):
+   - Shut down iMac completely
+   - Unplug power cord from back of iMac
+   - Wait 15 seconds
+   - Plug power cord back in
+   - Wait 5 seconds
+   - Press power button to start
+   
+2. **Verify Clock Stability** (run after 24 hours):
+   - Check if NTP offset reduced to <0.1 seconds
+   - Verify rateSf errors eliminated
+   - Monitor GPU timeout and watchdog panic occurrence
+
+3. **Test Internal Boot** (if drift persists):
+   - Boot from internal drive temporarily
+   - Monitor clock drift for 24 hours
+   - Compare with external SSD boot behavior
+
+4. **Hardware Service** (if all else fails):
+   - Clock drift >40 ppm after SMC reset suggests motherboard/RTC issue
+   - Document symptoms for Apple: clock drift + GPU timeouts + watchdog panics
+   - Consider AppleCare hardware diagnostics  
 
 ---
 
@@ -180,5 +282,4 @@ Under investigation; may interact with external SSD or corrupted keychain state.
 - macOS Sonoma logs ~25K messages/hour under normal conditions  
 - Statistical baselines essential for stable thresholds  
 - Legacy VMware guests safe  
-- External-SSD + Audio resume bugs can wedge WindowServer  
-
+- External-SSD + Audio resume bugs can wedge WindowServer
