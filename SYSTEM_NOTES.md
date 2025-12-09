@@ -10,6 +10,14 @@ This document contains the full system history, version changes, debugging inves
 
 (From original README; preserved verbatim for accuracy.)
 
+## v3.4.0 (2025-12-09) — RTC Clock Drift Monitoring
+- NEW: RTC clock drift detection via NTP offset check
+- Clock status categorization (Healthy/Warning/Critical)
+- rateSf clamping error detection (24h window)
+- Integrated into health scoring and severity assessment
+- Three new Airtable fields: Clock Drift Status, Clock Offset (seconds), Clock Drift Details
+- Addresses correlation between clock drift and GPU timeouts/watchdog panics
+
 ## v3.2.4 (2025-12-06) — Reachability & Unclassified Error Attribution
 - sshd/screen sharing/tailscale diagnostics  
 - Remote-access residue detection  
@@ -68,12 +76,17 @@ This document contains the full system history, version changes, debugging inves
   - Persistent trustd malformed anchor errors
   - External SSD I/O timing issues
 - **Hypothesis**: Low-level SMC/motherboard hardware issue affecting system timing, cascading into GPU coordination problems, external SSD I/O delays, and security framework errors
+- **Observation**: Clock drift improved spontaneously from +0.47s to +0.057s without intervention (intermittent issue confirmed)
 - **Action Plan**: 
   1. Perform SMC reset
   2. Monitor if clock drift, GPU timeouts, and watchdog panics cease
   3. If symptoms persist: Apple hardware service likely needed (internal drive failure + clock drift suggests broader hardware issues)
 - **Note**: Cannot test internal drive boot (internal drive not bootable)
-- Status: Investigation pending, troubleshooting steps to be executed
+- **Implementation**: Added v3.4.0 clock drift monitoring to health monitor
+  - Real-time NTP offset tracking
+  - rateSf clamping error detection
+  - Health scoring integration
+- Status: **Monitoring in production** - clock drift tracking active, SMC reset pending
 
 ## 2025-12-07 — Watchdog Panic & trustd Errors
 - Captured watchdog panic (bug_type 210)  
@@ -248,6 +261,11 @@ log show --predicate 'process == "timed"' --last 7d | grep "rateSf clamped"
 
 # 5. Future Enhancements & Roadmap
 
+### Implemented
+- ✅ RTC clock drift monitoring (v3.4.0)
+- ✅ NTP offset tracking and health integration
+- ✅ rateSf clamping error detection
+
 ### Planned
 - Network connectivity checks  
 - Fan speed monitoring  
@@ -284,7 +302,8 @@ log show --predicate 'process == "timed"' --last 7d | grep "rateSf clamped"
 - Calibrated macOS log noise  
 - VMware stability confirmation  
 - Thermal throttling accuracy  
-- Memory pressure interpretation  
+- Memory pressure interpretation
+- RTC clock drift detection and tracking  
 
 ### Key Learnings
 - macOS Sonoma logs ~25K messages/hour under normal conditions  
