@@ -8,6 +8,8 @@ This document contains the full system history, version changes, debugging inves
 
 # 1. Version History
 
+(From original README; preserved verbatim for accuracy.)
+
 ## v3.2.4 (2025-12-06) — Reachability & Unclassified Error Attribution
 - sshd/screen sharing/tailscale diagnostics  
 - Remote-access residue detection  
@@ -68,9 +70,9 @@ This document contains the full system history, version changes, debugging inves
 - **Hypothesis**: Low-level SMC/motherboard hardware issue affecting system timing, cascading into GPU coordination problems, external SSD I/O delays, and security framework errors
 - **Action Plan**: 
   1. Perform SMC reset
-  2. Test boot from internal drive to isolate external SSD timing dependency
-  3. Monitor if clock drift, GPU timeouts, and watchdog panics cease
-  4. If symptoms persist: Apple hardware service likely needed
+  2. Monitor if clock drift, GPU timeouts, and watchdog panics cease
+  3. If symptoms persist: Apple hardware service likely needed (internal drive failure + clock drift suggests broader hardware issues)
+- **Note**: Cannot test internal drive boot (internal drive not bootable)
 - Status: Investigation pending, troubleshooting steps to be executed
 
 ## 2025-12-07 — Watchdog Panic & trustd Errors
@@ -163,13 +165,21 @@ External boot device may be exacerbating underlying clock issue:
 - I/O latency on external drives affected by interrupt timing
 - USB/Thunderbolt controller depends on accurate system clocks
 - Clock corrections can confuse external I/O operation timing
+- **Critical**: Internal drive not bootable (failed/damaged), forced external boot
+- Internal drive failure + clock drift suggests potential systemic hardware degradation
 
 **Testing Protocol**:
 1. Perform SMC reset to address hardware clock timing
 2. Monitor NTP offset and correction frequency for 24-48 hours
-3. Test internal drive boot to isolate external SSD timing dependency
-4. Track correlation: does fixing clock drift also eliminate GPU timeouts?
-5. If clock drift persists after SMC reset + internal boot test: hardware service needed
+3. Track correlation: does fixing clock drift also eliminate GPU timeouts?
+4. ~~Test internal drive boot~~ (not possible - internal drive not bootable)
+5. If clock drift persists after SMC reset: hardware service needed - likely motherboard issues
+
+**Severity Assessment**:
+Combination of failed internal drive + clock drift + GPU timeouts + watchdog panics suggests **multiple hardware subsystems affected**, potentially:
+- Motherboard-level issue affecting both storage controller and RTC/SMC
+- Progressive hardware degradation
+- May require comprehensive hardware diagnostics beyond just clock/SMC repair
 
 **Expected Outcome**:
 If SMC/hardware is root cause, successful repair should eliminate:
@@ -227,15 +237,12 @@ log show --predicate 'process == "timed"' --last 7d | grep "rateSf clamped"
    - Verify rateSf errors eliminated
    - Monitor GPU timeout and watchdog panic occurrence
 
-3. **Test Internal Boot** (if drift persists):
-   - Boot from internal drive temporarily
-   - Monitor clock drift for 24 hours
-   - Compare with external SSD boot behavior
-
-4. **Hardware Service** (if all else fails):
+3. **Hardware Service** (if drift persists):
    - Clock drift >40 ppm after SMC reset suggests motherboard/RTC issue
-   - Document symptoms for Apple: clock drift + GPU timeouts + watchdog panics
-   - Consider AppleCare hardware diagnostics  
+   - Failed internal drive + clock drift indicates broader hardware problems
+   - Document symptoms for Apple: internal drive failure + clock drift + GPU timeouts + watchdog panics
+   - Recommend comprehensive hardware diagnostics (not just SMC/clock)
+   - Consider motherboard replacement may be needed  
 
 ---
 
@@ -266,7 +273,8 @@ log show --predicate 'process == "timed"' --last 7d | grep "rateSf clamped"
 
 ### Hardware Configuration
 - 2019 iMac 27" (Intel i5, 72GB RAM, Radeon Pro 570X)  
-- External Thunderbolt 3 SSD boot (SanDisk PRO-G40)  
+- External Thunderbolt 3 SSD boot (SanDisk PRO-G40) - **required due to internal drive issues**
+- Internal drive not bootable
 - macOS Sonoma 15.7.2  
 
 ### Monitoring Challenges Solved
