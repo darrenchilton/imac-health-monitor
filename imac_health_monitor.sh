@@ -494,13 +494,12 @@ clock_drift_status=$(echo "$clock_drift_data" | cut -d'|' -f1)
 clock_offset_seconds=$(echo "$clock_drift_data" | cut -d'|' -f2)
 clock_drift_details=$(echo "$clock_drift_data" | cut -d'|' -f3)
 
-# Check for recent rateSf clamping errors in timed logs
-ratesf_errors=$(log show --predicate 'process == "timed" AND eventMessage CONTAINS "rateSf clamped"' --last 24h 2>/dev/null | grep -c "rateSf clamped" || echo "0")
+# Check for recent rateSf clamping errors in timed logs (1h for speed)
+ratesf_errors=$(log show --predicate 'process == "timed" AND eventMessage CONTAINS "rateSf clamped"' --last 1h 2>/dev/null | grep -c "rateSf clamped" || echo "0")
 if [[ "$ratesf_errors" -gt 0 ]]; then
-    clock_drift_details+=" | ${ratesf_errors} rateSf clamp events in 24h"
-    [[ "$clock_drift_status" == "Healthy" && "$ratesf_errors" -gt 5 ]] && clock_drift_status="Warning"
+    clock_drift_details+=" | ${ratesf_errors} rateSf clamp events in 1h"
+    [[ "$clock_drift_status" == "Healthy" && "$ratesf_errors" -gt 2 ]] && clock_drift_status="Warning"
 fi
-
 ###############################################################################
 # User/Application Monitoring Functions
 ###############################################################################
@@ -1181,7 +1180,7 @@ jq_payload=$(jq -n \
             "I/O Stalls": ($io_stalls | tonumber),
             "I/O Stall Details": $io_details,
             "Reboot Detected": $reboot,
-            "Reboot Info": $reboot_info
+            "Reboot Info": $reboot_info,
             "Clock Drift Status": $clock_status,
             "Clock Offset (seconds)": ($clock_offset | tonumber),
             "Clock Drift Details": $clock_details
