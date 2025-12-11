@@ -259,11 +259,15 @@ fan_max_events_1h=0
 debug_log "Starting log collection (1h window)"
 safe_log() {
     local timeout_val=300
+    local window="$1"
+    debug_log "safe_log: starting log show --style syslog --last ${window}"
     local result
-    result=$(safe_timeout "$timeout_val" log show --style syslog --last "$1" 2>/dev/null)
+    result=$(safe_timeout "$timeout_val" log show --style syslog --last "$window" 2>/dev/null)
     if [[ $? -eq 124 ]]; then
+        debug_log "safe_log: LOG_TIMEOUT for window ${window}"
         echo "LOG_TIMEOUT"
     else
+        debug_log "safe_log: completed log show for window ${window}"
         echo "$result"
     fi
 }
@@ -370,8 +374,10 @@ reboot_info=$(echo "$reboot_data" | cut -d'|' -f2)
 
 # Capture Previous Shutdown Cause (from unified logs, limited window)
 previous_shutdown_cause_raw=$(safe_timeout 8 log show --last 1h \
-    --predicate 'eventMessage CONTAINS "Previous shutdown cause"' \
-    --style syslog 2>/dev/null | grep "Previous shutdown cause" | tail -1 | awk -F': ' '{print $NF}')
+    --style syslog 2>/dev/null \
+    | grep "Previous shutdown cause" \
+    | tail -1 \
+    | awk -F': ' '{print $NF}')
 
 if [[ -z "$previous_shutdown_cause_raw" ]]; then
     previous_shutdown_cause="Unknown"
