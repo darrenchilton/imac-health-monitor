@@ -376,7 +376,7 @@ reboot_info=$(echo "$reboot_data" | cut -d'|' -f2)
 previous_shutdown_cause_raw=$(safe_timeout 8 log show --last 24h \
     --predicate 'eventMessage CONTAINS "Previous shutdown cause"' \
     --style syslog 2>/dev/null \
-    | grep "Previous shutdown cause" \
+    | grep "AppleSMC) Previous shutdown cause" \
     | sed -En 's/.*Previous shutdown cause: *([0-9-]+).*/\1/p' \
     | tail -1)
 
