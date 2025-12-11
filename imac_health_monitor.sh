@@ -372,8 +372,9 @@ reboot_data=$(detect_recent_reboot)
 reboot_detected=$(echo "$reboot_data" | cut -d'|' -f1)
 reboot_info=$(echo "$reboot_data" | cut -d'|' -f2)
 
-# Capture Previous Shutdown Cause (from unified logs, limited window)
-previous_shutdown_cause_raw=$(safe_timeout 8 log show --last 1h \
+# Capture Previous Shutdown Cause (from unified logs, longer window so boot event is included)
+previous_shutdown_cause_raw=$(safe_timeout 8 log show --last 24h \
+    --predicate 'eventMessage CONTAINS "Previous shutdown cause"' \
     --style syslog 2>/dev/null \
     | grep "Previous shutdown cause" \
     | tail -1 \
