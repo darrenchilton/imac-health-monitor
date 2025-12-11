@@ -368,6 +368,18 @@ reboot_data=$(detect_recent_reboot)
 reboot_detected=$(echo "$reboot_data" | cut -d'|' -f1)
 reboot_info=$(echo "$reboot_data" | cut -d'|' -f2)
 
+# Capture Previous Shutdown Cause (from unified logs, limited window)
+previous_shutdown_cause_raw=$(safe_timeout 8 log show --last 1h \
+    --predicate 'eventMessage CONTAINS "Previous shutdown cause"' \
+    --style syslog 2>/dev/null | grep "Previous shutdown cause" | tail -1 | awk -F': ' '{print $NF}')
+
+if [[ -z "$previous_shutdown_cause_raw" ]]; then
+    previous_shutdown_cause="Unknown"
+else
+    previous_shutdown_cause="$previous_shutdown_cause_raw"
+fi
+
+
 # Update kernel panics text to include watchdog
 total_crashes=$((kernel_panics + watchdog_count))
 kernel_panics_text="No crashes in last 24 hours"
@@ -1108,6 +1120,7 @@ jq_payload=$(jq -n \
     --arg io_details "$io_stall_details" \
     --arg reboot "$reboot_detected" \
     --arg reboot_info "$reboot_info" \
+    --arg previous_shutdown_cause "$previous_shutdown_cause" \
     --arg clock_status "$clock_drift_status" \
     --arg clock_offset "$clock_offset_seconds" \
     --arg clock_details "$clock_drift_details" \
@@ -1181,6 +1194,7 @@ jq_payload=$(jq -n \
             "I/O Stall Details": $io_details,
             "Reboot Detected": $reboot,
             "Reboot Info": $reboot_info,
+            Previous Shutdown Cause": $previous_shutdown_cause,
             "Clock Drift Status": $clock_status,
             "Clock Offset (seconds)": ($clock_offset | tonumber),
             "Clock Drift Details": $clock_details
