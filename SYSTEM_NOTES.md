@@ -69,6 +69,11 @@ This document contains the full system history, version changes, debugging inves
 Here’s a drop-in chunk you can paste into `SYSTEM_NOTES.md` under **“2. System Modifications Log & Incident Timeline”**, right above the 2025-12-09 entry. 
 
 ---
+## 2025-12-11 — SMC Reset Performed
+- Performed SMC reset this morning (unplugged power for 15 seconds)
+- Action taken to address RTC clock drift and rateSf clamping issues
+- Monitoring effectiveness over next 48-72 hours
+- Initial post-reset readings: clock offset 0.008-0.03s (good), rateSf events still elevated at 3-8/hour
 
 ## 2025-12-10 — Abrupt Reboot & Health Monitor / Airtable Fixes
 
