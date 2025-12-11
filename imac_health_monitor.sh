@@ -274,7 +274,7 @@ safe_log() {
 
 LOG_1H=$(safe_log "1h")
 LOG_5M=$(safe_log "5m")
-
+debug_log "Parsing LOG_1H/LOG_5M metrics"
 if [[ "$LOG_1H" == "LOG_TIMEOUT" ]]; then
     errors_1h=0; critical_1h=0
     error_kernel_1h=0; error_windowserver_1h=0; error_spotlight_1h=0
@@ -316,7 +316,7 @@ if [[ "$LOG_5M" == "LOG_TIMEOUT" ]]; then
 else
     recent_5m=$(echo "$LOG_5M" | grep -i "error" | wc -l | tr -d ' ')
 fi
-
+debug_log "Finished parsing LOG_1H/LOG_5M metrics"
 ###############################################################################
 # Crash reports
 ###############################################################################
