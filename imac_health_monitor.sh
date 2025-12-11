@@ -1194,7 +1194,7 @@ jq_payload=$(jq -n \
             "I/O Stall Details": $io_details,
             "Reboot Detected": $reboot,
             "Reboot Info": $reboot_info,
-            Previous Shutdown Cause": $previous_shutdown_cause,
+            "Previous Shutdown Cause": $previous_shutdown_cause,
             "Clock Drift Status": $clock_status,
             "Clock Offset (seconds)": ($clock_offset | tonumber),
             "Clock Drift Details": $clock_details
