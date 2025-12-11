@@ -66,6 +66,71 @@ This document contains the full system history, version changes, debugging inves
 
 # 2. System Modifications Log & Incident Timeline
 
+Here’s a drop-in chunk you can paste into `SYSTEM_NOTES.md` under **“2. System Modifications Log & Incident Timeline”**, right above the 2025-12-09 entry. 
+
+---
+
+## 2025-12-10 — Abrupt Reboot & Health Monitor / Airtable Fixes
+
+* **Event:** Unexpected system reboot at ~2025-12-10 20:02.
+
+  * `last reboot` shows: `reboot time Wed Dec 10 20:02`.
+  * Unified log (`log show`) reports: `(AppleSMC) Previous shutdown cause: 3` near 20:02.
+  * No corresponding `*panic*.panic` files found in `/Library/Logs/DiagnosticReports` or `~/Library/Logs/DiagnosticReports`.
+* **Interpretation:**
+
+  * Shutdown cause `3` indicates an abrupt restart / hard reset category (not a clean menu-driven “Restart…”).
+  * Absence of a `.panic` file suggests either a low-level reset without a formal kernel panic dump, or a crash early enough that the panic report wasn’t written to disk.
+  * Most likely: sudden reset / power-like event rather than a normal software restart.
+* **User-impact / symptoms:**
+
+  * GUI user session was logged out; per-user LaunchAgents (including `com.slavicany.imac-health-monitor`) disappeared from `launchctl list`.
+  * SSH key agent state was lost; subsequent SSH connections prompted for key passphrase again (expected after session teardown).
+  * Health monitor appeared “not running” when inspected over SSH because the GUI login session (and its `gui/$UID` launchd domain) was gone.
+* **Health monitor issues uncovered during investigation:**
+
+  * Old log entries showed `./imac_health_monitor.sh: syntax error near unexpected token '<<<<<<< HEAD'` and `[[: 0 0: syntax error in expression (error token is "0")` from a previous state where merge-conflict markers existed in the script.
+
+    * Current script passes `bash -n` and runs cleanly; historical errors left in `imac_health_monitor.launchd.err` were confusing the picture.
+  * Airtable began returning `422 INVALID_REQUEST_MISSING_FIELDS` with message `"Could not find field \"fields\" in the request body"`.
+
+    * Root cause: typo in the jq JSON template, missing opening quote on the new `"Previous Shutdown Cause"` field key:
+
+      * Broken: `Previous Shutdown Cause": $previous_shutdown_cause,`
+      * Fixed: `"Previous Shutdown Cause": $previous_shutdown_cause,`
+    * This produced malformed JSON, so Airtable could not see the top-level `"fields"` object.
+* **New telemetry added:**
+
+  * **Previous Shutdown Cause capture:**
+
+    * Script now queries unified logs for the last shutdown cause and sends it to Airtable as `"Previous Shutdown Cause"`.
+    * Implementation: `log show` over a wider time window with `grep "Previous shutdown cause"` and `tail -1` to capture the most recent value.
+    * In Airtable, a formula field `Shutdown Cause (Text)` maps numeric codes:
+
+      * `5` → “Normal software restart”
+      * `3` → “Abrupt restart / hard reset”
+      * `0` → “Power loss / sudden off”
+      * `14` → “Thermal protection shutdown”
+      * Unknown/other values → `"Other (X)"` or left blank if there is no value.
+  * **Log collection observability:**
+
+    * `safe_log()` now writes debug lines around each `log show` invocation (start, timeout, completion) for both `1h` and `5m` windows.
+    * Additional debug line added around the heavy `LOG_1H`/`LOG_5M` parsing section to distinguish “slow `log show`” vs “slow grepping/parsing of that data.”
+* **Performance observations:**
+
+  * `log show --style syslog --last 1h` can take several minutes on this system after heavy activity (especially post-crash), causing noticeable pauses at `Starting log collection (1h window)` and during the parsing block.
+  * `safe_timeout` is currently set to 300 seconds for the 1h window; when it times out, the monitor falls back to zeroed metrics and `"Log collection timed out"` to avoid blocking indefinitely.
+* **Status / follow-up:**
+
+  * Health monitor LaunchAgent is confirmed to load and run correctly when the GUI user is logged in; absence from `launchctl list` when logged out is expected behavior for a per-user LaunchAgent.
+  * `Previous Shutdown Cause` now flows into Airtable and will aid in classifying future reboots (normal vs abrupt vs thermal/power).
+  * If shutdown cause `3` recurs frequently, this will be correlated against:
+
+    * Existing RTC clock drift issues and `Wall Clock adjustment detected` messages.
+    * GPU timeouts, watchdog events, and external SSD behavior.
+  * For now, event is logged as **“Abrupt reboot with shutdown cause 3, no panic file”** and monitored alongside prior RTC and hardware concerns.
+
+
 ## 2025-12-09 — RTC Clock Drift & Potential Hardware Issue Detected
 - Discovered persistent "Wall Clock adjustment detected" warnings in `log show` output
 - Investigation revealed significant RTC clock drift: ~45-54 ppm (gains 4-5 seconds/day)
