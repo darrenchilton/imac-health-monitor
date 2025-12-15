@@ -97,6 +97,36 @@ Status:
 - PRAM/NVRAM reset completed earlier today.
 - RAM removal pending; change not yet applied at time of this entry.
 
+## 2025-12-15 — RAM configuration change (OWC DIMMs removed)
+
+At approximately **11:00 AM EST**, the following hardware change was performed:
+
+- **Removed:** two 32 GB third-party DIMMs  
+  - Model: **OWC2666DDR4S32G**
+- **Retained:** two original Apple 4 GB DIMMs
+- **Resulting configuration:** 4 GB + 4 GB (8 GB total, Apple OEM)
+- All other hardware unchanged
+- System continues to boot from external Thunderbolt 3 SSD (SanDisk PRO-G40)
+
+Purpose:
+- Isolate suspected RAM instability by removing third-party, high-capacity DIMMs.
+- Establish whether crashes and sustained kernel/network error storms persist on known-good Apple OEM memory.
+- Create a clean control configuration before re-introducing larger matched modules.
+
+Notes:
+- This configuration is intentionally memory-constrained and not intended for long-term use.
+- Performance degradation is expected; stability is the sole metric under evaluation.
+- This supersedes the previously planned 64 GB matched-pair test, which may be revisited depending on results.
+
+Monitoring status:
+- Health monitor active
+- **11:00 AM EST** marks the definitive before/after boundary for log and trend analysis.
+- Post-change telemetry will be compared against:
+  - Pre-change baseline
+  - Known failure windows (e.g., Dec 14 escalation period).
+
+
+
 
 - ## 2025-12-14 — Pre-crash error storm (idle console), network+kernel dominant
 
