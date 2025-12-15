@@ -72,6 +72,16 @@ This document contains the full system history, version changes, debugging inves
 - Following up on SMC reset from 2025-12-11
 - Monitoring system stability, clock drift, and GPU timeout events
 
+- ## 2025-12-14 — Pre-crash error storm (idle console), network+kernel dominant
+
+Crash occurred shortly after: Monitor Closely-Critical (Dec 14, 2025 9:17 PM).
+In the 60 minutes prior, Error Count showed the sharpest observed step-up at 20:49 (Δ ≈ +34,638 vs prior sample).
+Pre-crash error-stream mix was dominated by error_network_1h (8,383) and error_kernel_1h (5,147), with smaller Spotlight/iCloud components.
+Pattern matches multiple prior “Critical” events (cosine similarity ≈ 0.993–0.997), typically network-heavy (>50% share), suggesting a recurring failure mode rather than a one-off user-triggered incident.
+
+Notes: sampling is sparse in the final hour (only 2 records pre-21:17), so finer-grained inflection timing cannot be resolved from this dataset.
+
+
 ## 2025-12-11 — SMC Reset Performed
 - Performed SMC reset this morning (unplugged power for 15 seconds)
 - Action taken to address RTC clock drift and rateSf clamping issues
