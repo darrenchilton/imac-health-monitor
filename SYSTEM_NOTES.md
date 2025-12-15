@@ -72,6 +72,32 @@ This document contains the full system history, version changes, debugging inves
 - Following up on SMC reset from 2025-12-11
 - Monitoring system stability, clock drift, and GPU timeout events
 
+- ## 2025-12-15 — Suspected RAM instability (mixed-capacity DIMMs)
+
+System identified with mixed memory configuration on iMac19,1 (2019):
+- 32 GB + 32 GB + 4 GB + 4 GB (72 GB total, all slots in use).
+- Mixed-capacity DIMMs observed under macOS Sonoma.
+
+Recurring crash pattern shows:
+- Repeated “Monitor Closely / Critical” events.
+- Kernel- and network-dominant error streams.
+- Crashes occurring while system is idle (console idle for days), not user-driven.
+- Highly similar pre-crash signatures across multiple dates.
+
+Assessment:
+- Mixed-capacity RAM on this model/OS is a plausible source of marginal hardware instability.
+- Configuration may have been previously tolerated but degraded under Sonoma or with aging hardware.
+
+Planned actions:
+- Leave current configuration in place temporarily to gather additional baseline telemetry.
+- Later today, remove the two 4 GB DIMMs and test system with matched 32 GB + 32 GB configuration (64 GB total).
+- Monitor error rate, crash frequency, and idle stability post-change for comparison.
+
+Status:
+- PRAM/NVRAM reset completed earlier today.
+- RAM removal pending; change not yet applied at time of this entry.
+
+
 - ## 2025-12-14 — Pre-crash error storm (idle console), network+kernel dominant
 
 Crash occurred shortly after: Monitor Closely-Critical (Dec 14, 2025 9:17 PM).
