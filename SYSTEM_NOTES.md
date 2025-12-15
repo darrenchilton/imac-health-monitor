@@ -66,9 +66,6 @@ This document contains the full system history, version changes, debugging inves
 
 # 2. System Modifications Log & Incident Timeline
 
-Here’s a drop-in chunk you can paste into `SYSTEM_NOTES.md` under **“2. System Modifications Log & Incident Timeline”**, right above the 2025-12-09 entry. 
-
----
 ## 2025-12-15 — PRAM Reset Performed
 - Performed PRAM reset at 5:30 AM EST (Command-Option-P-R on startup)
 - Action taken to address persistent hardware timing issues
