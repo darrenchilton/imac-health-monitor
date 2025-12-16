@@ -66,6 +66,35 @@ This document contains the full system history, version changes, debugging inves
 
 # 2. System Modifications Log & Incident Timeline
 
+
+## 2025-12-16 — Crash on Apple-only RAM; switched to OWC-only configuration
+
+At approximately **12:30 PM local time**, the system experienced another crash while running on
+**Apple OEM memory only (4 GB + 4 GB, 8 GB total)**.
+
+Actions taken immediately after the crash:
+- Removed both Apple 4 GB DIMMs
+- Installed **OWC-only matched pair**:
+  - 32 GB + 32 GB (Model: OWC2666DDR4S32G)
+  - Total: **64 GB**
+- Verified by macOS: 64 GB installed, 2 slots populated, 2 slots empty
+
+Interpretation:
+- Persistence of instability on Apple-only RAM rules out Apple DIMMs as the sole failure cause.
+- Issue is unlikely to be simple third-party RAM incompatibility or mixed-capacity configuration alone.
+- Findings suggest either:
+  - a memory slot / IMC / logic board–level issue, or
+  - a separate hardware domain (SMC / RTC / Thunderbolt / external SSD) that is sensitive to idle background activity.
+
+Next steps:
+- Continue monitoring on OWC-only 64 GB configuration.
+- Focus on:
+  - recurrence of kernel/network error storms
+  - idle-time crashes
+  - shutdown cause codes
+- If instability persists, RAM will be considered a secondary factor rather than root cause.
+
+
 ## 2025-12-15 — PRAM Reset Performed
 - Performed PRAM reset at 5:30 AM EST (Command-Option-P-R on startup)
 - Action taken to address persistent hardware timing issues
