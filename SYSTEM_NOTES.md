@@ -94,6 +94,11 @@ Next steps:
   - shutdown cause codes
 - If instability persists, RAM will be considered a secondary factor rather than root cause.
 
+- Addendum:
+- When installing the OWC 32 GB + 32 GB pair, the DIMMs were placed in **different memory slots** than the Apple 4 GB DIMMs previously occupied (slot layout changed).
+- This introduces an implicit slot/path isolation component to the test (slot-specific fault vs DIMM-specific fault).
+
+
 
 ## 2025-12-15 — PRAM Reset Performed
 - Performed PRAM reset at 5:30 AM EST (Command-Option-P-R on startup)
