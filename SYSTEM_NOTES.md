@@ -60,7 +60,58 @@ This document contains the full system history, version changes, debugging inves
 
 ## v2.2 (Previous)
 - Noise-filtered logs  
-- Burst-aware error detection  
+- Burst-aware error detection
+
+- ## 2026-01-06 — GPU instability instrumentation (baseline phase complete)
+
+Status:
+- GPU-related monitoring instrumentation added in a minimal, low-risk manner.
+- System returned to a clean, stable baseline after implementation.
+- No ongoing debugging or experimental hooks left in production code.
+
+New fields introduced (Airtable schema created up front):
+- gpu_timeout_1h
+- gpu_reset_1h
+- gpu_last_event_ts
+- gpu_last_event_excerpt
+- windowserver_errors_1h (placeholder)
+- gpu_panic_or_watchdog_24h (placeholder)
+
+Implementation details:
+- gpu_timeout_1h:
+  - Counts GPU timeout-style messages observed in unified logs over the last 1 hour.
+- gpu_reset_1h:
+  - Counts GPU reset / restart messages observed in unified logs over the last 1 hour.
+- gpu_last_event_ts / gpu_last_event_excerpt:
+  - Populated only when gpu_timeout_1h > 0.
+  - Remain null/blank under normal operation.
+
+Design constraints:
+- No new background daemons introduced.
+- No GPU polling or profiling.
+- No kexts or invasive diagnostics.
+- All signals derived from existing log buffers already collected by the monitor.
+
+Validation:
+- Fields confirmed to flow correctly to Airtable.
+- Typical steady-state values are zero.
+- Blank fields are intentional and indicate no GPU-related events.
+
+Not yet implemented (by design):
+- windowserver_errors_1h population
+- gpu_panic_or_watchdog_24h population
+- Any causal or lead/lag correlation logic
+
+Next phase (explicitly deferred):
+- Temporal correlation between GPU events, WindowServer errors, reboots, and watchdogs.
+- Focus will be on ordering and co-occurrence, not raw volume.
+
+System state after change:
+- LaunchDaemon running stably.
+- Locking verified.
+- No duplicate runs.
+- Considered a clean baseline for future GPU/WindowServer causality analysis.
+
 
 ---
 
