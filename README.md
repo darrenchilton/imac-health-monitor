@@ -2,6 +2,9 @@
 
 The iMac Health Monitor is a Bash-based system that collects hardware, OS, user, and error metrics every 20 minutes and sends them to Airtable for centralized analysis. It is optimized for a 2019 iMac running macOS Sonoma from an external Thunderbolt SSD, with statistically calibrated thresholds that reflect real macOS log volume.
 
+**Note (Jan 2026):** The monitor now runs as a **system LaunchDaemon** (system domain) so it works outside of user login sessions. The older **LaunchAgent** instructions are retained for reference but should be considered deprecated.
+
+
 **Version 3.4.0** adds RTC clock drift monitoring to detect hardware timing issues that can cause GPU timeouts and system instability.
 
 This README covers what the system is, how to install it, how to configure it, and what metrics it reports.
@@ -17,6 +20,41 @@ This README covers what the system is, how to install it, how to configure it, a
 - Full Disk Access (optional for Time Machine)
 
 ### Setup Steps
+
+### Setup Steps (LaunchDaemon — Current)
+
+0. **Create system env file (root-only)**
+```bash
+sudo tee /etc/imac-health-monitor.env >/dev/null << 'EOF'
+AIRTABLE_PAT=your_personal_access_token_here
+AIRTABLE_BASE_ID=your_base_id_here
+AIRTABLE_TABLE_NAME=System Health
+EOF
+sudo chown root:wheel /etc/imac-health-monitor.env
+sudo chmod 600 /etc/imac-health-monitor.env
+sudo cp com.slavicany.imac-health-monitor.plist /Library/LaunchDaemons/
+sudo chown root:wheel /Library/LaunchDaemons/com.slavicany.imac-health-monitor.plist
+sudo chmod 644 /Library/LaunchDaemons/com.slavicany.imac-health-monitor.plist
+
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.slavicany.imac-health-monitor.plist
+sudo launchctl enable system/com.slavicany.imac-health-monitor
+sudo launchctl kickstart -k system/com.slavicany.imac-health-monitor
+
+Daemon logs:
+
+/var/log/imac_health_monitor.launchd.log
+
+/var/log/imac_health_monitor.launchd.err
+
+/var/log/imac_health_monitor.script.log
+
+
+Then leave the existing “Setup Steps” (1–7) in place, but add a one-line label above them:
+
+**Insert immediately above your existing “1. Clone repository”**:
+
+```md
+### Setup Steps (LaunchAgent — Legacy / Deprecated)
 
 1. **Clone repository**
 ```bash
@@ -68,7 +106,8 @@ sudo pmset -c displaysleep 10
 
 ## Configuration
 
-The `.env` file defines Airtable credentials:
+The monitor loads Airtable credentials from `/etc/imac-health-monitor.env` when running as a LaunchDaemon. If that file is not present, it falls back to a local `.env` file in the repository directory.
+
 
 ```
 AIRTABLE_PAT=
@@ -159,7 +198,8 @@ Full details are in `SYSTEM_NOTES.md`.
 ### LaunchAgent not running
 ```bash
 launchctl list | grep imac-health
-cat ~/Library/Logs/imac-health-monitor.err.log
+sudo tail -n 200 /var/log/imac_health_monitor.launchd.err
+sudo tail -n 200 /var/log/imac_health_monitor.launchd.log
 ```
 
 ### Always “Critical”
