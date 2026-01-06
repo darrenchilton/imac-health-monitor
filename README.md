@@ -171,7 +171,29 @@ The monitor collects hardware state, OS activity, and diagnostic information:
 - Run duration  
 - Debug log  
 - System error summaries  
-- Recent crash list  
+- Recent crash list
+
+- ### GPU Stability (Baseline Instrumentation)
+
+The monitor currently reports a minimal set of GPU-related indicators intended for long-term correlation, not real-time alerting:
+
+- gpu_timeout_1h  
+  Count of GPU timeout-style log messages observed in the last hour.
+
+- gpu_reset_1h  
+  Count of GPU reset / restart messages observed in the last hour.
+
+- gpu_last_event_ts  
+  Timestamp of the most recent GPU timeout event (only populated when gpu_timeout_1h > 0).
+
+- gpu_last_event_excerpt  
+  Short log excerpt from the most recent GPU timeout event (only populated when gpu_timeout_1h > 0).
+
+Notes:
+- These fields are expected to be zero or blank under normal conditions.
+- Blank values indicate absence of GPU-related instability, not a data collection failure.
+- Additional GPU/WindowServer correlation fields are intentionally deferred until sufficient baseline data is collected.
+
 
 ---
 
