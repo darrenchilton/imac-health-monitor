@@ -483,3 +483,36 @@ log show --predicate 'process == "timed"' --last 7d | grep "rateSf clamped"
 - Statistical baselines essential for stable thresholds  
 - Legacy VMware guests safe  
 - External-SSD + Audio resume bugs can wedge WindowServer
+
+- ---
+
+## 2026-01 — LaunchDaemon Migration (Runs Outside User Login)
+
+### Why
+- LaunchAgent (gui/$UID) stops when no user session exists (logout, crash, headless operation).
+- Needed continuous monitoring across reboots and without an interactive login.
+
+### What changed
+- Switched from LaunchAgent to LaunchDaemon:
+  - `/Library/LaunchDaemons/com.slavicany.imac-health-monitor.plist`
+  - loaded via `launchctl bootstrap system ...`
+- Credentials:
+  - preferred: `/etc/imac-health-monitor.env` (root-only, 600)
+  - fallback: local `.env` for legacy/manual runs
+- Logging:
+  - launchd stdout: `/var/log/imac_health_monitor.launchd.log`
+  - launchd stderr: `/var/log/imac_health_monitor.launchd.err`
+  - script debug_log: `/var/log/imac_health_monitor.script.log`
+- User LaunchAgent disabled/removed to avoid duplicate Airtable posts:
+  - moved `~/Library/LaunchAgents/com.slavicany.imac-health-monitor.plist` to `~/Library/LaunchAgents.disabled/`
+
+### Issues encountered and resolved
+- `launchctl bootstrap ...` opaque `I/O error` caused by unsupported plist key (`ExitTimeOut`); removed.
+- Wrapper script initially swallowed stdout/stderr; daemon updated to execute `imac_health_monitor.sh` directly.
+- Stale lock handling caused skipped runs; logic adjusted so stale locks do not block execution indefinitely.
+- Debug logging briefly included Airtable token during diagnosis; remove secret output and rotate PAT if needed.
+
+### Current baseline
+- System daemon runs cleanly without user login and logs to `/var/log`.
+- Ready for GPU-specific instrumentation in a new chat.
+
