@@ -1254,8 +1254,9 @@ printf '%s' "$jq_payload" > "$PAYLOAD_FILE"
 # Sanitize Airtable URL components (prevents curl error 3 from CR/LF or whitespace)
 AIRTABLE_BASE_ID="$(printf '%s' "$AIRTABLE_BASE_ID" | tr -d '\r\n' | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
 AIRTABLE_TABLE_NAME="$(printf '%s' "$AIRTABLE_TABLE_NAME" | tr -d '\r\n' | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
-
-AIRTABLE_URL="https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME}"
+# URL-encode table name for use in URL path (e.g. "System Health" → "System%20Health")
+AIRTABLE_TABLE_NAME_ENC="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$AIRTABLE_TABLE_NAME")"
+AIRTABLE_URL="https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME_ENC}"
 
 RESPONSE=$(curl -sS --connect-timeout 10 --max-time 30 -w "\nHTTP_STATUS:%{http_code}" \
   -X POST "$AIRTABLE_URL" \
