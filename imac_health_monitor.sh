@@ -539,7 +539,10 @@ clock_offset_seconds=$(echo "$clock_drift_data" | cut -d'|' -f2)
 clock_drift_details=$(echo "$clock_drift_data" | cut -d'|' -f3)
 
 # Check for recent rateSf clamping errors in timed logs (1h for speed)
-ratesf_errors=$(log show --predicate 'process == "timed" AND eventMessage CONTAINS "rateSf clamped"' --last 1h 2>/dev/null | grep -c "rateSf clamped" || echo "0")
+ratesf_errors=$(log show --predicate 'process == "timed" AND eventMessage CONTAINS "rateSf clamped"' --last 1h 2>/dev/null \
+    | grep -c "rateSf clamped" 2>/dev/null | tr -d ' ')
+[[ -z "$ratesf_errors" ]] && ratesf_errors=0
+
 if [[ "$ratesf_errors" -gt 0 ]]; then
     clock_drift_details+=" | ${ratesf_errors} rateSf clamp events in 1h"
     [[ "$clock_drift_status" == "Healthy" && "$ratesf_errors" -gt 5 ]] && clock_drift_status="Warning"
@@ -1250,16 +1253,6 @@ debug_log "Finished JSON payload build with jq"
 ###############################################################################
 debug_log "Starting Airtable upload"
 
-echo "DEBUG: jq_payload length = ${#jq_payload}"
-echo "DEBUG: First 500 chars:"
-echo "${jq_payload:0:500}"
-echo "---"
-echo "DEBUG: About to curl..."
-echo "AIRTABLE_PAT: ${AIRTABLE_PAT:0:20}..."
-echo "AIRTABLE_BASE_ID: $AIRTABLE_BASE_ID"
-echo "AIRTABLE_TABLE_NAME: $AIRTABLE_TABLE_NAME"
-echo "URL: https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME}"
-
 RESPONSE=$(curl -sS --connect-timeout 10 --max-time 30 -w "\nHTTP_STATUS:%{http_code}" \
     -X POST "https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/System%20Health" \
     -H "Authorization: Bearer ${AIRTABLE_PAT}" \
@@ -1282,7 +1275,13 @@ debug_log "Airtable HTTP status: $HTTP_STATUS"
 debug_log "Airtable response (truncated 500 chars): $(echo "$HTTP_BODY" | head -c 500)"
 
 if [ "$HTTP_STATUS" -eq 200 ]; then
-    RECORD_ID=$(echo "$HTTP_BODY" | jq -r '.id // "unknown"')
+    if echo "$HTTP_BODY" | jq -e . >/dev/null 2>&1; then
+        RECORD_ID=$(echo "$HTTP_BODY" | jq -r '.id // "unknown"')
+    else
+        debug_log "WARNING: Airtable response was not valid JSON; skipping jq id parse. First 200 chars: $(echo "$HTTP_BODY" | head -c 200)"
+        RECORD_ID="unknown"
+    fi
+
     echo "Record created successfully: $RECORD_ID"
     debug_log "Airtable record created successfully: $RECORD_ID"
 else
