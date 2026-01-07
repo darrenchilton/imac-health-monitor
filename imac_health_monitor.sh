@@ -1162,7 +1162,6 @@ jq_payload=$(jq -n \
     --arg gpu_timeout_1h "$gpu_timeout_1h" \
     --arg gpu_reset_1h "$gpu_reset_1h" \
     --arg gpu_last_event_ts "$gpu_last_event_ts" \
-
     '{
         "fields": {
             "Hostname": $hostname,
