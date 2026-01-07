@@ -233,6 +233,24 @@ curl -X GET "https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NA
   -H "Authorization: Bearer ${AIRTABLE_PAT}"
 ```
 
+### Airtable Record Gaps (HTTP 422 on Date Fields)
+
+If Airtable records appear to be missing for a contiguous time window while the monitor otherwise appears to be running normally, check for HTTP 422 errors in the LaunchDaemon logs.
+
+**Root cause (resolved – Jan 2026):**
+Airtable rejects records when a Date field is sent as an empty string (`""`). This occurred for the field `gpu_last_event_ts` when no GPU events were present. Airtable returned `INVALID_VALUE_FOR_COLUMN`, causing the entire record to be rejected and producing apparent gaps in the time-series data.
+
+**Resolution:**
+The monitor now omits `gpu_last_event_ts` entirely unless a valid ISO-8601 timestamp exists. Empty or whitespace-only values are never sent to Airtable Date fields.
+
+**How to detect quickly:**
+```bash
+sudo grep -n "status 422" /var/log/imac_health_monitor.launchd.log
+```
+
+If present, Airtable rejected records during that interval even though the script executed.
+
+
 ---
 
 ## License
