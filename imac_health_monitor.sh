@@ -1247,16 +1247,18 @@ debug_log "Finished JSON payload build with jq"
 ###############################################################################
 # Upload to Airtable
 ###############################################################################
-###############################################################################
-# Upload to Airtable
-###############################################################################
 debug_log "Starting Airtable upload"
 # Write payload to a temp file to avoid any quoting/escaping issues when posting JSON
 PAYLOAD_FILE="$(mktemp /tmp/imac_health_payload.XXXXXX.json)"
 printf '%s' "$jq_payload" > "$PAYLOAD_FILE"
+# Sanitize Airtable URL components (prevents curl error 3 from CR/LF or whitespace)
+AIRTABLE_BASE_ID="$(printf '%s' "$AIRTABLE_BASE_ID" | tr -d '\r\n' | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
+AIRTABLE_TABLE_NAME="$(printf '%s' "$AIRTABLE_TABLE_NAME" | tr -d '\r\n' | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
+
+AIRTABLE_URL="https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME}"
 
 RESPONSE=$(curl -sS --connect-timeout 10 --max-time 30 -w "\nHTTP_STATUS:%{http_code}" \
-  -X POST "https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME}" \
+  -X POST "$AIRTABLE_URL" \
   -H "Authorization: Bearer ${AIRTABLE_PAT}" \
   -H "Content-Type: application/json" \
   --data-binary @"$PAYLOAD_FILE")
