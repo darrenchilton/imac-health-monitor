@@ -318,6 +318,30 @@ else
 fi
 debug_log "Finished parsing LOG_1H/LOG_5M metrics"
 ###############################################################################
+# GPU Stability (Baseline Instrumentation) — derived from existing LOG_1H only
+# Fields:
+#   gpu_timeout_1h, gpu_reset_1h, gpu_last_event_ts
+# Semantics (per docs): gpu_last_event_ts only populated when gpu_timeout_1h > 0
+###############################################################################
+gpu_timeout_1h=0
+gpu_reset_1h=0
+gpu_last_event_ts=""
+
+if [[ "$LOG_1H" != "LOG_TIMEOUT" ]]; then
+    # Keep patterns conservative and auditable; adjust only if you have known-good signatures.
+    gpu_lines="$(echo "$LOG_1H" | grep -Ei 'IOGPU|AGX|GPU|AMDRadeon|IOAccelerator|Metal' | grep -Ei 'timeout|hang|reset|restart' || true)"
+
+    gpu_timeout_1h="$(echo "$gpu_lines" | grep -Eic 'timeout|hang' || true)"
+    gpu_reset_1h="$(echo "$gpu_lines" | grep -Eic 'reset|restart' || true)"
+
+    if [[ "$gpu_timeout_1h" -gt 0 ]]; then
+        # log show --style syslog begins lines with "YYYY-MM-DD HH:MM:SS(.sss)(TZ) ..."
+        last_gpu_line="$(echo "$gpu_lines" | tail -n 1)"
+        gpu_last_event_ts="$(echo "$last_gpu_line" | awk '{print $1" "$2}')"
+    fi
+fi
+
+###############################################################################
 # Crash reports
 ###############################################################################
 debug_log "Checking for crash reports"
@@ -1132,6 +1156,10 @@ jq_payload=$(jq -n \
     --arg clock_status "$clock_drift_status" \
     --arg clock_offset "$clock_offset_seconds" \
     --arg clock_details "$clock_drift_details" \
+    --arg gpu_timeout_1h "$gpu_timeout_1h" \
+    --arg gpu_reset_1h "$gpu_reset_1h" \
+    --arg gpu_last_event_ts "$gpu_last_event_ts" \
+
     '{
         "fields": {
             "Hostname": $hostname,
@@ -1205,7 +1233,12 @@ jq_payload=$(jq -n \
             "Previous Shutdown Cause": $previous_shutdown_cause,
             "Clock Drift Status": $clock_status,
             "Clock Offset (seconds)": ($clock_offset | tonumber),
-            "Clock Drift Details": $clock_details
+            "Clock Drift Details": $clock_details,
+            "gpu_timeout_1h": ($gpu_timeout_1h | tonumber),
+            "gpu_reset_1h": ($gpu_reset_1h | tonumber),
+            "gpu_last_event_ts": $gpu_last_event_ts
+
+            
         }
     }')
 debug_log "Finished JSON payload build with jq"
