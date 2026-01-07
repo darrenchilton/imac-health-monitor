@@ -21,35 +21,59 @@
 # - sshd_running remains informational; ssh_port_listening is canonical.
 ###############################################################################
 
-SECONDS=0
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
 ###############################################################################
-# LOCK FILE MECHANISM - Prevent concurrent execution
+# LOCK (ATOMIC) - Prevent concurrent execution
 ###############################################################################
-LOCK_FILE="$SCRIPT_DIR/.health_monitor.lock"
-MAX_LOCK_AGE=1800  # 30 minutes - if lock is older, assume stale
+LOCK_DIR="/tmp/imac_health_monitor.lockdir"
+LOCK_PID_FILE="${LOCK_DIR}/pid"
+MAX_LOCK_AGE=1800  # 30 minutes
 
-if [ -f "$LOCK_FILE" ]; then
-    LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
-    LOCK_TIME=$(stat -f "%m" "$LOCK_FILE" 2>/dev/null || stat -c "%Y" "$LOCK_FILE" 2>/dev/null)
+# Try to acquire lock atomically
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    # Lock exists: check staleness
+    LOCK_TIME=$(stat -f "%m" "$LOCK_DIR" 2>/dev/null || echo "0")
     CURRENT_TIME=$(date +%s)
     LOCK_AGE=$((CURRENT_TIME - LOCK_TIME))
 
-    if ps -p "$LOCK_PID" > /dev/null 2>&1; then
-        echo "Another instance (PID $LOCK_PID) is already running. Exiting."
-        exit 0
-    elif [ "$LOCK_AGE" -lt "$MAX_LOCK_AGE" ]; then
-        echo "Recent lock file exists but process not found. Waiting for stale lock to expire."
-        exit 0
+    # If PID file exists and process is running, exit
+    if [[ -f "$LOCK_PID_FILE" ]]; then
+        LOCK_PID=$(cat "$LOCK_PID_FILE" 2>/dev/null || echo "")
+        if [[ "$LOCK_PID" =~ ^[0-9]+$ ]] && ps -p "$LOCK_PID" >/dev/null 2>&1; then
+            echo "Another instance (PID $LOCK_PID) is already running. Exiting."
+            exit 0
+        fi
+    fi
+
+    # If lock is stale, clear it and retry once
+    if [[ "$LOCK_AGE" -ge "$MAX_LOCK_AGE" ]]; then
+        echo "Stale lock detected (age: ${LOCK_AGE}s). Removing and continuing."
+        rm -rf "$LOCK_DIR"
+        if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+            echo "Unable to acquire lock after removing stale lock. Exiting."
+            exit 0
+        fi
     else
-        echo "Stale lock file detected (age: ${LOCK_AGE}s). Removing and continuing."
-        rm -f "$LOCK_FILE"
+        echo "Lock exists but PID not running; lock age ${LOCK_AGE}s < ${MAX_LOCK_AGE}s. Exiting to avoid overlap."
+        exit 0
     fi
 fi
 
-echo $$ > "$LOCK_FILE"
-trap "rm -f '$LOCK_FILE'" EXIT INT TERM
+echo $$ > "$LOCK_PID_FILE"
+# Prevent recursive self-invocation (re-entrancy)
+if [[ -n "${IMAC_HEALTH_MONITOR_RUNNING:-}" ]]; then
+    echo "Recursive invocation detected (IMAC_HEALTH_MONITOR_RUNNING already set). Exiting."
+    exit 0
+fi
+export IMAC_HEALTH_MONITOR_RUNNING="1"
+
+# Lock integrity guard: ensure lock remains held for the lifetime of this process
+if [[ ! -d "$LOCK_DIR" ]]; then
+    echo "ERROR: Lock directory disappeared immediately after acquisition. Exiting."
+    exit 1
+fi
+
+trap '[[ -f "$LOCK_PID_FILE" && "$(cat "$LOCK_PID_FILE" 2>/dev/null)" == "$$" ]] && rm -rf "$LOCK_DIR"' EXIT INT TERM
+
 
 ###############################################################################
 # ERROR THRESHOLDS - Based on statistical analysis of 281 samples (Nov 2025)
@@ -64,14 +88,25 @@ CRITICAL_FAULT_CRITICAL=100
 ###############################################################################
 # Load .env
 ###############################################################################
-ENV_PATH="$SCRIPT_DIR/.env"
-if [ ! -f "$ENV_PATH" ]; then
-    echo "ERROR: .env file not found at $ENV_PATH"
+###############################################################################
+# Load env (LaunchDaemon-safe)
+###############################################################################
+ENV_PATH_SYSTEM="/etc/imac-health-monitor.env"
+ENV_PATH_LOCAL="$SCRIPT_DIR/.env"
+
+if [[ -f "$ENV_PATH_SYSTEM" ]]; then
+    ENV_PATH="$ENV_PATH_SYSTEM"
+elif [[ -f "$ENV_PATH_LOCAL" ]]; then
+    ENV_PATH="$ENV_PATH_LOCAL"
+else
+    echo "ERROR: No env file found at $ENV_PATH_SYSTEM or $ENV_PATH_LOCAL"
     exit 1
 fi
+
 set -a
 source "$ENV_PATH"
 set +a
+
 
 # Backward compatibility: older installs used AIRTABLE_API_KEY
 if [[ -z "${AIRTABLE_PAT:-}" && -n "${AIRTABLE_API_KEY:-}" ]]; then
@@ -92,7 +127,7 @@ safe_timeout() {
 }
 
 debug_log() {
-    echo "[$(date '+%H:%M:%S')] $1" >> "$SCRIPT_DIR/debug.log"
+    echo "[$(date '+%H:%M:%S')] $1" | tee -a "${LOG_FILE:-/var/log/imac_health_monitor.script.log}"
 }
 
 to_int() {
@@ -100,7 +135,8 @@ to_int() {
     [[ "$val" =~ ^[0-9]+$ ]] && echo "$val" || echo "0"
 }
 
-echo "[$(date '+%H:%M:%S')] === SCRIPT START ===" >> "$SCRIPT_DIR/debug.log"
+debug_log "=== SCRIPT START ==="
+
 
 ###############################################################################
 # Hostname and macOS version
@@ -175,7 +211,9 @@ ssd_issues=$(echo "$ssd_health_data" | cut -d'|' -f2)
 ###############################################################################
 debug_log "Checking for kernel panic files"
 kernel_panics=0
-panic_files=$(find ~/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports -name "Kernel*.panic" -mtime -1 2>/dev/null)
+panic_search_paths=(/Library/Logs/DiagnosticReports /Users/*/Library/Logs/DiagnosticReports)
+panic_files=$(find "${panic_search_paths[@]}" -name "Kernel*.panic" -mtime -1 2>/dev/null)
+
 if [ -n "$panic_files" ]; then
     while IFS= read -r file; do
         if [ -f "$file" ]; then
@@ -318,34 +356,41 @@ else
 fi
 debug_log "Finished parsing LOG_1H/LOG_5M metrics"
 ###############################################################################
-# GPU Stability (Baseline Instrumentation) — derived from existing LOG_1H only
-# Fields:
-#   gpu_timeout_1h, gpu_reset_1h, gpu_last_event_ts
-# Semantics (per docs): gpu_last_event_ts only populated when gpu_timeout_1h > 0
+# NEW: GPU timeout detection (1h) — minimal, log-derived
 ###############################################################################
 gpu_timeout_1h=0
-gpu_reset_1h=0
+gpu_last_event_excerpt=""
 gpu_last_event_ts=""
 
-if [[ "$LOG_1H" != "LOG_TIMEOUT" ]]; then
-    # Keep patterns conservative and auditable; adjust only if you have known-good signatures.
-    gpu_lines="$(echo "$LOG_1H" | grep -Ei 'IOGPU|AGX|GPU|AMDRadeon|IOAccelerator|Metal' | grep -Ei 'timeout|hang|reset|restart' || true)"
+GPU_TIMEOUT_LINES="$(
+  printf "%s\n" "$LOG_1H" | grep -E -i \
+    'timed out waiting for|IOGPU.*timeout|GPU.*timeout|AMDRadeon.*timeout|GPU Hang|GPU Restart'
+)"
 
-    gpu_timeout_1h="$(echo "$gpu_lines" | grep -Eic 'timeout|hang' || true)"
-    gpu_reset_1h="$(echo "$gpu_lines" | grep -Eic 'reset|restart' || true)"
+gpu_timeout_1h="$(printf "%s\n" "$GPU_TIMEOUT_LINES" | grep -c . || true)"
 
-    if [[ "$gpu_timeout_1h" -gt 0 ]]; then
-        # log show --style syslog begins lines with "YYYY-MM-DD HH:MM:SS(.sss)(TZ) ..."
-        last_gpu_line="$(echo "$gpu_lines" | tail -n 1)"
-        gpu_last_event_ts="$(echo "$last_gpu_line" | awk '{print $1" "$2}')"
-    fi
+if [[ "$gpu_timeout_1h" -gt 0 ]]; then
+    gpu_last_event_excerpt="$(printf "%s\n" "$GPU_TIMEOUT_LINES" | tail -n 1 | cut -c1-300)"
+    gpu_last_event_ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 fi
+###############################################################################
+# NEW: GPU reset/restart detection (1h) — minimal, log-derived
+###############################################################################
+gpu_reset_1h=0
+
+GPU_RESET_LINES="$(
+  printf "%s\n" "$LOG_1H" | grep -E -i \
+    'GPU Restart|GPU reset|resetting GPU|IOGPU.*restart|IOGPU.*reset|AMDRadeon.*reset|AMDRadeon.*restart'
+)"
+
+gpu_reset_1h="$(printf "%s\n" "$GPU_RESET_LINES" | grep -c . || true)"
+
 
 ###############################################################################
 # Crash reports
 ###############################################################################
 debug_log "Checking for crash reports"
-crash_files=$(ls -1t ~/Library/Logs/DiagnosticReports/*.{crash,ips,panic,diag} 2>/dev/null)
+crash_files=$(ls -1t /Library/Logs/DiagnosticReports/*.{crash,ips,panic,diag} /Users/*/Library/Logs/DiagnosticReports/*.{crash,ips,panic,diag} 2>/dev/null)
 crash_count=$(echo "$crash_files" | grep -v '^$' | wc -l | tr -d ' ')
 top_crashes=$(echo "$crash_files" | head -3 | sed 's/.*\///' | paste -sd "," -)
 
@@ -495,7 +540,7 @@ gpu_freeze_events="$gpu_issues"
 # RTC Clock Drift Monitoring
 ###############################################################################
 check_clock_drift() {
-    debug_log "Checking RTC clock drift"
+    debug_log "Checking RTC clock drift" >/dev/null
     local sntp_output
     local clock_offset_raw
     local clock_offset
@@ -539,10 +584,7 @@ clock_offset_seconds=$(echo "$clock_drift_data" | cut -d'|' -f2)
 clock_drift_details=$(echo "$clock_drift_data" | cut -d'|' -f3)
 
 # Check for recent rateSf clamping errors in timed logs (1h for speed)
-ratesf_errors=$(log show --predicate 'process == "timed" AND eventMessage CONTAINS "rateSf clamped"' --last 1h 2>/dev/null \
-    | grep -c "rateSf clamped" 2>/dev/null | tr -d ' ')
-[[ -z "$ratesf_errors" ]] && ratesf_errors=0
-
+ratesf_errors=$(log show --predicate 'process == "timed" AND eventMessage CONTAINS "rateSf clamped"' --last 1h 2>/dev/null | grep -c "rateSf clamped" || echo "0")
 if [[ "$ratesf_errors" -gt 0 ]]; then
     clock_drift_details+=" | ${ratesf_errors} rateSf clamp events in 1h"
     [[ "$clock_drift_status" == "Healthy" && "$ratesf_errors" -gt 5 ]] && clock_drift_status="Warning"
@@ -1126,7 +1168,7 @@ jq_payload=$(jq -n \
     --arg high_risk "$high_risk_apps" \
     --arg resource_hogs "$resource_hogs" \
     --arg legacy_flags "$legacy_software_flags" \
-    --arg debug_log "$(tail -50 "$SCRIPT_DIR/debug.log" | paste -sd '\n' -)" \
+    --arg debug_log "$(tail -50 "$LOG_FILE" 2>/dev/null | paste -sd '\n' -)" \
     --arg vmware_mem "$vmware_memory_gb" \
     --arg vm_count "$vm_count" \
     --arg user_count "$user_count" \
@@ -1149,6 +1191,10 @@ jq_payload=$(jq -n \
     --arg watchdog_details "$watchdog_details" \
     --arg gpu_status "$gpu_status" \
     --arg gpu_issues "$gpu_issues" \
+    --arg gpu_timeout_1h "$gpu_timeout_1h" \
+    --arg gpu_reset_1h "$gpu_reset_1h" \
+    --arg gpu_last_event_ts "$gpu_last_event_ts" \
+    --arg gpu_last_event_excerpt "$gpu_last_event_excerpt" \
     --arg ssd_status "$ssd_status" \
     --arg ssd_issues "$ssd_issues" \
     --arg io_stalls "$io_stall_count" \
@@ -1159,9 +1205,6 @@ jq_payload=$(jq -n \
     --arg clock_status "$clock_drift_status" \
     --arg clock_offset "$clock_offset_seconds" \
     --arg clock_details "$clock_drift_details" \
-    --arg gpu_timeout_1h "$gpu_timeout_1h" \
-    --arg gpu_reset_1h "$gpu_reset_1h" \
-    --arg gpu_last_event_ts "$gpu_last_event_ts" \
     '{
         "fields": {
             "Hostname": $hostname,
@@ -1226,6 +1269,9 @@ jq_payload=$(jq -n \
             "Watchdog Details": $watchdog_details,
             "GPU Status": $gpu_status,
             "GPU Issues (Detailed)": $gpu_issues,
+            "gpu_timeout_1h": ($gpu_timeout_1h | tonumber),
+            "gpu_reset_1h": ($gpu_reset_1h | tonumber),
+            "gpu_last_event_excerpt": (if ($gpu_timeout_1h | tonumber) > 0 then $gpu_last_event_excerpt else null end),
             "External SSD Status": $ssd_status,
             "SSD Issues": $ssd_issues,
             "I/O Stalls": ($io_stalls | tonumber),
@@ -1235,36 +1281,34 @@ jq_payload=$(jq -n \
             "Previous Shutdown Cause": $previous_shutdown_cause,
             "Clock Drift Status": $clock_status,
             "Clock Offset (seconds)": ($clock_offset | tonumber),
-            "Clock Drift Details": $clock_details,
-            "gpu_timeout_1h": ($gpu_timeout_1h | tonumber),
-            "gpu_reset_1h": ($gpu_reset_1h | tonumber),
-            "gpu_last_event_ts": $gpu_last_event_ts
-
-            
+            "Clock Drift Details": $clock_details
+           }
         }
-    }')
+    | (if ($gpu_last_event_ts | gsub("\\s+";"") | length) == 0
+       then .
+       else .fields.gpu_last_event_ts = $gpu_last_event_ts
+       end)
+')
+
 debug_log "Finished JSON payload build with jq"
 ###############################################################################
 # Upload to Airtable
 ###############################################################################
+###############################################################################
+# Upload to Airtable
+###############################################################################
 debug_log "Starting Airtable upload"
-# Write payload to a temp file to avoid any quoting/escaping issues when posting JSON
-PAYLOAD_FILE="$(mktemp /tmp/imac_health_payload.XXXXXX.json)"
-printf '%s' "$jq_payload" > "$PAYLOAD_FILE"
-# Sanitize Airtable URL components (prevents curl error 3 from CR/LF or whitespace)
-AIRTABLE_BASE_ID="$(printf '%s' "$AIRTABLE_BASE_ID" | tr -d '\r\n' | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
-AIRTABLE_TABLE_NAME="$(printf '%s' "$AIRTABLE_TABLE_NAME" | tr -d '\r\n' | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
-# URL-encode table name for use in URL path (e.g. "System Health" → "System%20Health")
-AIRTABLE_TABLE_NAME_ENC="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$AIRTABLE_TABLE_NAME")"
-AIRTABLE_URL="https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME_ENC}"
+
+debug_log "Airtable payload prepared (length: ${#jq_payload})"
+
 
 RESPONSE=$(curl -sS --connect-timeout 10 --max-time 30 -w "\nHTTP_STATUS:%{http_code}" \
-  -X POST "$AIRTABLE_URL" \
-  -H "Authorization: Bearer ${AIRTABLE_PAT}" \
-  -H "Content-Type: application/json" \
-  --data-binary @"$PAYLOAD_FILE")
+    -X POST "https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/System%20Health" \
+    -H "Authorization: Bearer ${AIRTABLE_PAT}" \
+    -H "Content-Type: application/json" \
+    --data "$jq_payload")
+
 CURL_EXIT=$?
-rm -f "$PAYLOAD_FILE"
 debug_log "Curl to Airtable finished with exit code $CURL_EXIT"
 
 if [ "$CURL_EXIT" -ne 0 ]; then
@@ -1280,13 +1324,7 @@ debug_log "Airtable HTTP status: $HTTP_STATUS"
 debug_log "Airtable response (truncated 500 chars): $(echo "$HTTP_BODY" | head -c 500)"
 
 if [ "$HTTP_STATUS" -eq 200 ]; then
-    if echo "$HTTP_BODY" | jq -e . >/dev/null 2>&1; then
-        RECORD_ID=$(echo "$HTTP_BODY" | jq -r '.id // "unknown"')
-    else
-        debug_log "WARNING: Airtable response was not valid JSON; skipping jq id parse. First 200 chars: $(echo "$HTTP_BODY" | head -c 200)"
-        RECORD_ID="unknown"
-    fi
-
+    RECORD_ID=$(echo "$HTTP_BODY" | jq -r '.id // "unknown"')
     echo "Record created successfully: $RECORD_ID"
     debug_log "Airtable record created successfully: $RECORD_ID"
 else
@@ -1296,4 +1334,4 @@ else
     exit 1
 fi
 
-echo "[$(date '+%H:%M:%S')] Script completed in ${runtime}" >> "$SCRIPT_DIR/debug.log"
+debug_log "Script completed in ${runtime}"
