@@ -118,6 +118,43 @@ System state after change:
 # 2. System Modifications Log & Incident Timeline
 
 
+## 2026-01-07 — Airtable Gaps Due to Empty Date Field (Resolved)
+
+**Symptom**
+- Airtable time-series gap (~01:40–07:35 local)
+- LaunchDaemon executed on schedule
+- No system crash, reboot, or sleep during the gap
+
+**Cause**
+- Field involved: `gpu_last_event_ts`
+- When no GPU timeout/reset events occurred, the script previously sent:
+  ```json
+  "gpu_last_event_ts": ""
+  ```
+- Airtable Date fields cannot parse empty strings and returned:
+  `422 INVALID_VALUE_FOR_COLUMN`
+- Entire record was rejected, creating silent data gaps despite successful script execution.
+
+**Contributing factors**
+- launchd logs contained both successful and failed uploads, masking the issue.
+- Env file path mismatch (`/etc/imac-health-monitor.env` vs `/etc/imac_health_monitor.env`) temporarily caused exit code 1 during recovery.
+- A stale lock directory (`/tmp/imac_health_monitor.lockdir`) intermittently blocked retries while debugging.
+
+**Resolution**
+- `gpu_last_event_ts` is now conditionally added only when a valid timestamp exists.
+- Empty or whitespace-only values are treated as null and omitted.
+- Env file path corrected to match script expectations.
+- Stale lock directory cleared.
+
+**Verification**
+- Airtable HTTP 200 responses observed.
+- Records successfully created after fix.
+- `launchctl print` reports `last exit code = 0` after completion.
+
+**Design rule going forward**
+> Never send empty strings to Airtable Date fields. Omit the field or send `null`.
+
+
 ## 2025-12-16 — Crash on Apple-only RAM; switched to OWC-only configuration
 
 At approximately **12:30 PM local time**, the system experienced another crash while running on
