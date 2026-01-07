@@ -1252,14 +1252,17 @@ debug_log "Finished JSON payload build with jq"
 # Upload to Airtable
 ###############################################################################
 debug_log "Starting Airtable upload"
+# Write payload to a temp file to avoid any quoting/escaping issues when posting JSON
+PAYLOAD_FILE="$(mktemp /tmp/imac_health_payload.XXXXXX.json)"
+printf '%s' "$jq_payload" > "$PAYLOAD_FILE"
 
 RESPONSE=$(curl -sS --connect-timeout 10 --max-time 30 -w "\nHTTP_STATUS:%{http_code}" \
-    -X POST "https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/System%20Health" \
-    -H "Authorization: Bearer ${AIRTABLE_PAT}" \
-    -H "Content-Type: application/json" \
-    --data "$jq_payload")
-
+  -X POST "https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME}" \
+  -H "Authorization: Bearer ${AIRTABLE_PAT}" \
+  -H "Content-Type: application/json" \
+  --data-binary @"$PAYLOAD_FILE")
 CURL_EXIT=$?
+rm -f "$PAYLOAD_FILE"
 debug_log "Curl to Airtable finished with exit code $CURL_EXIT"
 
 if [ "$CURL_EXIT" -ne 0 ]; then
